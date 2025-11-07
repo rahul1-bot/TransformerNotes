@@ -1,0 +1,102 @@
+% Lines 171-270 from original attention_transformers_notes_ghost.tex
+% Chapter 2: Introduction - The Journey from Sequential to Parallel Processing
+
+%==============================================================================
+\section{Introduction: The Journey from Sequential to Parallel Processing}
+%==============================================================================
+
+\subsection{The Fundamental Challenge of Sequence Modeling}
+
+Natural language processing (NLP) presents unique challenges that distinguish it from other machine learning domains. When we process sequences—whether they're sentences, time series, or any ordered data—we face several fundamental problems:
+
+\begin{enumerate}
+    \item \textbf{Variable Length Inputs}: Unlike images that can be resized to fixed dimensions, sentences naturally vary in length from a few words to hundreds of tokens.
+
+    \item \textbf{Long-Range Dependencies}: Understanding natural language often requires connecting information separated by many tokens. Consider the sentence: "The scientist who discovered the new element, which was named after Marie Curie due to her pioneering work in radioactivity, was awarded the Nobel Prize." The connection between "scientist" and "was awarded" spans numerous intervening words.
+
+    \item \textbf{Contextual Meaning}: Words derive their meaning from context. The word "bank" means something entirely different in "river bank" versus "investment bank."
+
+    \item \textbf{Sequential Nature}: Traditional approaches processed sequences one element at a time, creating computational bottlenecks.
+\end{enumerate}
+
+\subsection{Historical Context: The RNN Era}
+
+Recurrent Neural Networks (RNNs) emerged as the first serious attempt to handle sequential data in neural networks. The fundamental idea was elegant: maintain a hidden state that gets updated as we process each element of the sequence.
+
+\begin{equation}
+\mathbf{h}_t = f(\mathbf{W}_{hh}\mathbf{h}_{t-1} + \mathbf{W}_{xh}\mathbf{x}_t + \mathbf{b}_h)
+\end{equation}
+\begin{notationbox}
+\textbf{Notation:}
+\begin{itemize}
+    \item $\mathbf{h}_t$: Hidden state at time step $t$
+    \item $\mathbf{W}_{hh}$: Hidden-to-hidden weight matrix
+    \item $\mathbf{W}_{xh}$: Input-to-hidden weight matrix
+    \item $\mathbf{x}_t$: Input at time step $t$
+    \item $\mathbf{b}_h$: Bias vector
+    \item $f$: Activation function (typically tanh or ReLU)
+\end{itemize}
+\end{notationbox}
+
+\subsubsection{The Vanishing Gradient Problem}
+
+Despite their theoretical appeal, vanilla RNNs suffered from a critical flaw: the vanishing gradient problem. When backpropagating through many time steps, gradients tend to either vanish (approach zero) or explode (become extremely large).
+
+Consider the gradient flow through $T$ time steps:
+\begin{equation}
+\frac{\partial \mathcal{L}}{\partial \mathbf{h}_0} = \frac{\partial \mathcal{L}}{\partial \mathbf{h}_T} \prod_{t=1}^{T} \frac{\partial \mathbf{h}_t}{\partial \mathbf{h}_{t-1}}
+\end{equation}
+\begin{notationbox}
+\textbf{Notation:}
+\begin{itemize}
+    \item $\mathcal{L}$: Loss function
+    \item $\frac{\partial \mathbf{h}_t}{\partial \mathbf{h}_{t-1}}$: Jacobian matrix of hidden state transition
+\end{itemize}
+\end{notationbox}
+
+Each Jacobian term involves the derivative of the activation function and the recurrent weight matrix. For long sequences, this product of many terms typically causes gradients to vanish.
+
+\subsubsection{LSTM and GRU: Partial Solutions}
+
+Long Short-Term Memory (LSTM) networks and Gated Recurrent Units (GRUs) attempted to address the vanishing gradient problem through gating mechanisms:
+
+\textbf{LSTM equations:}
+\begin{align}
+\mathbf{f}_t &= \sigma(\mathbf{W}_f \cdot [\mathbf{h}_{t-1}, \mathbf{x}_t] + \mathbf{b}_f) \quad \text{(Forget gate)} \\
+\mathbf{i}_t &= \sigma(\mathbf{W}_i \cdot [\mathbf{h}_{t-1}, \mathbf{x}_t] + \mathbf{b}_i) \quad \text{(Input gate)} \\
+\tilde{\mathbf{C}}_t &= \tanh(\mathbf{W}_C \cdot [\mathbf{h}_{t-1}, \mathbf{x}_t] + \mathbf{b}_C) \quad \text{(Candidate values)} \\
+\mathbf{C}_t &= \mathbf{f}_t * \mathbf{C}_{t-1} + \mathbf{i}_t * \tilde{\mathbf{C}}_t \quad \text{(Cell state)} \\
+\mathbf{o}_t &= \sigma(\mathbf{W}_o \cdot [\mathbf{h}_{t-1}, \mathbf{x}_t] + \mathbf{b}_o) \quad \text{(Output gate)} \\
+\mathbf{h}_t &= \mathbf{o}_t * \tanh(\mathbf{C}_t) \quad \text{(Hidden state)}
+\end{align}
+\begin{notationbox}
+\textbf{Notation:}
+\begin{itemize}
+    \item $\sigma$: Sigmoid activation function
+    \item $*$: Element-wise multiplication
+    \item $[\mathbf{a}, \mathbf{b}]$: Concatenation of vectors $\mathbf{a}$ and $\mathbf{b}$
+    \item $\mathbf{f}_t, \mathbf{i}_t, \mathbf{o}_t$: Forget, input, and output gates
+    \item $\mathbf{C}_t$: Cell state (long-term memory)
+    \item $\tilde{\mathbf{C}}_t$: Candidate cell state
+\end{itemize}
+\end{notationbox}
+
+While LSTMs and GRUs improved upon vanilla RNNs, they still faced fundamental limitations:
+\begin{itemize}
+    \item \textbf{Sequential Processing}: Each time step depends on the previous one, preventing parallelization
+    \item \textbf{Information Bottleneck}: All sequence information must flow through fixed-size hidden states
+    \item \textbf{Limited Context Window}: Despite gating mechanisms, very long sequences remained challenging
+\end{itemize}
+
+\subsection{The Motivation for Attention}
+
+The attention mechanism emerged from a simple observation: when humans process sequences, we don't compress all information into a single mental state. Instead, we dynamically focus on relevant parts of the input as needed.
+
+Consider translating "I am Vasilis" to German "Ich bin Vasilis":
+\begin{itemize}
+    \item When generating "Ich", we primarily focus on "I"
+    \item When generating "bin", we consider both "am" and the subject "I"
+    \item When generating "Vasilis", we directly attend to "Vasilis"
+\end{itemize}
+
+This selective focus mechanism inspired the attention mechanism in neural networks.

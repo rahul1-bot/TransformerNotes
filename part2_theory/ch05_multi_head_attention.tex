@@ -1,0 +1,337 @@
+% Lines 808-1142 from original attention_transformers_notes_ghost.tex
+% Chapter 5: Multi-Head Attention: Learning Diverse Representations
+
+%==============================================================================
+\section{Multi-Head Attention: Learning Diverse Representations}
+%==============================================================================
+
+\subsection{Motivation: Multiple Representation Subspaces}
+
+Single attention allows the model to focus on one type of relationship at a time. However, natural language involves multiple types of relationships simultaneously:
+\begin{itemize}
+    \item Syntactic relationships (subject-verb, modifier-noun)
+    \item Semantic relationships (synonyms, antonyms)
+    \item Positional relationships (adjacent words, phrase boundaries)
+    \item Long-range dependencies (coreference, discourse)
+\end{itemize}
+
+Multi-head attention enables the model to jointly attend to information from different representation subspaces.
+
+\subsection{Mathematical Formulation}
+
+Instead of performing a single attention function, multi-head attention:
+\begin{enumerate}
+    \item Projects queries, keys, and values $h$ times with different projections
+    \item Performs attention in parallel for each projection
+    \item Concatenates the results and projects again
+\end{enumerate}
+
+\begin{equation}
+\text{MultiHead}(\mathbf{Q}, \mathbf{K}, \mathbf{V}) = \text{Concat}(\text{head}_1, ..., \text{head}_h)\mathbf{W}^O
+\end{equation}
+
+where each head is computed as:
+\begin{equation}
+\text{head}_i = \text{Attention}(\mathbf{Q}\mathbf{W}_i^Q, \mathbf{K}\mathbf{W}_i^K, \mathbf{V}\mathbf{W}_i^V)
+\end{equation}
+\begin{notationbox}
+\textbf{Notation:}
+\begin{itemize}
+    \item $h$: Number of attention heads
+    \item $\mathbf{W}_i^Q \in \mathbb{R}^{d_{model} \times d_k}$: Query projection for head $i$
+    \item $\mathbf{W}_i^K \in \mathbb{R}^{d_{model} \times d_k}$: Key projection for head $i$
+    \item $\mathbf{W}_i^V \in \mathbb{R}^{d_{model} \times d_v}$: Value projection for head $i$
+    \item $\mathbf{W}^O \in \mathbb{R}^{hd_v \times d_{model}}$: Output projection
+    \item $d_{model}$: Model dimension
+    \item $d_k = d_v = d_{model}/h$: Dimension per head
+\end{itemize}
+\end{notationbox}
+
+\subsection{Visualization of Multi-Head Attention}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[scale=0.7, every node/.style={scale=0.8}]
+    % Input
+    \node[draw, fill=gray!20, minimum width=3cm, minimum height=1cm] (input) at (0,0) {Input\\$\mathbf{X} \in \mathbb{R}^{n \times d_{model}}$};
+
+    % Projection to heads
+    \foreach \i/\color in {1/red,2/blue,3/green} {
+        \node[draw, fill=\color!20, minimum width=2cm, minimum height=0.8cm] (qkv\i) at (-3+\i*3,2) {$\mathbf{Q}_{\i}, \mathbf{K}_{\i}, \mathbf{V}_{\i}$};
+        \draw[arrow] (input) -- (qkv\i);
+
+        % Attention
+        \node[draw, fill=\color!40, minimum width=2cm, minimum height=0.8cm] (att\i) at (-3+\i*3,4) {Attention\\Head \i};
+        \draw[arrow] (qkv\i) -- (att\i);
+
+        % Output
+        \node[draw, fill=\color!20, minimum width=1.5cm, minimum height=0.6cm] (out\i) at (-3+\i*3,6) {$\mathbf{Z}_{\i}$};
+        \draw[arrow] (att\i) -- (out\i);
+    }
+
+    % Concatenation
+    \node[draw, fill=yellow!20, minimum width=4cm, minimum height=0.8cm] (concat) at (3,7.5) {Concatenate};
+    \foreach \i in {1,2,3} {
+        \draw[arrow] (out\i) -- (concat);
+    }
+
+    % Final projection
+    \node[draw, fill=orange!20, minimum width=3cm, minimum height=0.8cm] (proj) at (3,9) {Project $\mathbf{W}^O$};
+    \draw[arrow] (concat) -- (proj);
+
+    % Output
+    \node[draw, fill=gray!20, minimum width=3cm, minimum height=1cm] (output) at (3,10.5) {Output\\$\mathbf{Z} \in \mathbb{R}^{n \times d_{model}}$};
+    \draw[arrow] (proj) -- (output);
+
+    % Title
+    \node[above=0.5cm of output, font=\large\bfseries] {Multi-Head Attention Architecture};
+\end{tikzpicture}
+\caption{Multi-Head Attention with 3 Heads}
+\label{fig:multihead-attention}
+\end{figure}
+
+\subsection{Implementation in PyTorch}
+
+Let's implement multi-head attention following our strict coding guidelines:
+
+\begin{lstlisting}[language=Python, caption=Multi-Head Attention Implementation]
+from __future__ import annotations
+from dataclasses import dataclass
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from typing import Optional
+import math
+
+
+@dataclass(frozen=True, slots=True)
+class AttentionConfig:
+    d_model: int
+    n_heads: int
+    dropout: float = 0.1
+
+    def __post_init__(self) -> None:
+        if self.d_model % self.n_heads != 0:
+            raise ValueError(
+                f"d_model ({self.d_model}) must be divisible by "
+                f"n_heads ({self.n_heads})"
+            )
+        if not 0 <= self.dropout < 1:
+            raise ValueError("Dropout must be in [0, 1)")
+
+    @property
+    def d_k(self) -> int:
+        return self.d_model // self.n_heads
+
+    @property
+    def d_v(self) -> int:
+        return self.d_model // self.n_heads
+
+
+class MultiHeadAttention(nn.Module):
+    def __init__(self, config: AttentionConfig) -> None:
+        super().__init__()
+        self._config: AttentionConfig = config
+        self._d_model: int = config.d_model
+        self._n_heads: int = config.n_heads
+        self._d_k: int = config.d_k
+        self._d_v: int = config.d_v
+
+        self._w_q: nn.Linear = nn.Linear(self._d_model, self._d_model)
+        self._w_k: nn.Linear = nn.Linear(self._d_model, self._d_model)
+        self._w_v: nn.Linear = nn.Linear(self._d_model, self._d_model)
+        self._w_o: nn.Linear = nn.Linear(self._d_model, self._d_model)
+
+        self._dropout: nn.Dropout = nn.Dropout(config.dropout)
+        self._scale: float = math.sqrt(self._d_k)
+
+        self._initialize_weights()
+
+    def _initialize_weights(self) -> None:
+        for module in [self._w_q, self._w_k, self._w_v, self._w_o]:
+            nn.init.xavier_uniform_(module.weight)
+            if module.bias is not None:
+                nn.init.constant_(module.bias, 0.0)
+
+    def forward(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        batch_size: int = query.size(0)
+        seq_len: int = query.size(1)
+
+        Q: torch.Tensor = self._w_q(query)
+        K: torch.Tensor = self._w_k(key)
+        V: torch.Tensor = self._w_v(value)
+
+        Q = self._reshape_for_attention(Q, batch_size)
+        K = self._reshape_for_attention(K, batch_size)
+        V = self._reshape_for_attention(V, batch_size)
+
+        attention_output: torch.Tensor = self._scaled_dot_product_attention(
+            Q, K, V, mask
+        )
+
+        attention_output = self._reshape_from_attention(
+            attention_output, batch_size, seq_len
+        )
+
+        output: torch.Tensor = self._w_o(attention_output)
+        return output
+
+    def _reshape_for_attention(
+        self,
+        tensor: torch.Tensor,
+        batch_size: int
+    ) -> torch.Tensor:
+        return tensor.view(
+            batch_size, -1, self._n_heads, self._d_k
+        ).transpose(1, 2)
+
+    def _reshape_from_attention(
+        self,
+        tensor: torch.Tensor,
+        batch_size: int,
+        seq_len: int
+    ) -> torch.Tensor:
+        return tensor.transpose(1, 2).contiguous().view(
+            batch_size, seq_len, self._d_model
+        )
+
+    def _scaled_dot_product_attention(
+        self,
+        Q: torch.Tensor,
+        K: torch.Tensor,
+        V: torch.Tensor,
+        mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        scores: torch.Tensor = torch.matmul(Q, K.transpose(-2, -1)) / self._scale
+
+        if mask is not None:
+            scores = scores.masked_fill(mask == 0, -1e9)
+
+        attention_weights: torch.Tensor = F.softmax(scores, dim=-1)
+        attention_weights = self._dropout(attention_weights)
+
+        context: torch.Tensor = torch.matmul(attention_weights, V)
+        return context
+\end{lstlisting}
+
+\subsection{Theoretical Analysis of Multi-Head Attention}
+
+\subsubsection{Representation Power of Multi-Head vs Single-Head}
+
+Multi-head attention provably increases the representational capacity compared to single-head attention.
+
+\textbf{Theorem (Representation Separation):} There exist functions computable by multi-head attention that cannot be efficiently computed by single-head attention with the same parameter budget.
+
+\textbf{Proof:} Consider a sequence where we need to simultaneously:
+\begin{enumerate}
+    \item Track syntactic dependencies (e.g., subject-verb agreement)
+    \item Model semantic similarity (e.g., word meaning relationships)
+\end{enumerate}
+
+A single attention head must choose a single similarity metric (projection), while multi-head can dedicate different heads to different similarity notions. Formally, let $f_1, f_2$ be two orthogonal similarity functions. Multi-head can compute:
+\begin{equation}
+\text{MH}(\mathbf{X}) = \text{Concat}(\text{Attn}(\mathbf{X}, f_1), \text{Attn}(\mathbf{X}, f_2))\mathbf{W}^O
+\end{equation}
+
+while single-head is restricted to a linear combination:
+\begin{equation}
+\text{SH}(\mathbf{X}) = \text{Attn}(\mathbf{X}, \alpha f_1 + \beta f_2)
+\end{equation}
+
+The non-linearity of attention makes these fundamentally different.
+
+\subsubsection{Low-Rank Bottleneck Analysis}
+
+A critical theoretical insight is that each head operates in a lower-dimensional subspace.
+
+\textbf{Theorem (Rank Constraint):} For multi-head attention with $h$ heads and model dimension $d$, each head operates on a subspace of dimension $d/h$, creating a rank bottleneck.
+
+\begin{notationbox}
+\textbf{Notation:}
+\begin{itemize}
+    \item $h$: Number of attention heads
+    \item $d$: Model dimension
+    \item $d_k = d_v = d/h$: Dimension per head
+    \item $\text{rank}(\cdot)$: Matrix rank
+\end{itemize}
+\end{notationbox}
+
+\textbf{Analysis:} For each head $i$, the attention output is:
+\begin{equation}
+\text{head}_i = \text{Attention}(\mathbf{X}\mathbf{W}_i^Q, \mathbf{X}\mathbf{W}_i^K, \mathbf{X}\mathbf{W}_i^V)
+\end{equation}
+
+where $\mathbf{W}_i^Q, \mathbf{W}_i^K, \mathbf{W}_i^V \in \mathbb{R}^{d \times d_k}$. Thus:
+\begin{equation}
+\text{rank}(\text{head}_i) \leq \min(n, d_k) = \min(n, d/h)
+\end{equation}
+
+This creates a fundamental trade-off: more heads provide diversity but reduce per-head capacity.
+
+\subsubsection{Optimal Number of Heads: Theoretical Analysis}
+
+We derive the optimal number of heads from an information-theoretic perspective.
+
+\textbf{Theorem (Optimal Head Count):} Under certain assumptions, the optimal number of heads $h^*$ satisfies:
+\begin{equation}
+h^* = \arg\max_h \left\{ h \cdot I(\mathbf{X}; \mathbf{Z}_{\text{head}}) - \lambda \cdot \frac{h}{d} \right\}
+\end{equation}
+
+where $I(\mathbf{X}; \mathbf{Z}_{\text{head}})$ is the mutual information between input and per-head output, and $\lambda$ is a capacity penalty.
+
+\textbf{Intuition:} This balances two forces:
+\begin{itemize}
+    \item More heads → more diverse representations (first term)
+    \item More heads → less capacity per head (second term)
+\end{itemize}
+
+\subsubsection{Attention Head Redundancy and Pruning Theory}
+
+Not all attention heads contribute equally; some are redundant.
+
+\textbf{Definition (Head Importance Score):} For head $i$:
+\begin{equation}
+\text{Importance}_i = \mathbb{E}_{\mathbf{x} \sim \mathcal{D}} \left[ \left\| \frac{\partial \mathcal{L}}{\partial \text{head}_i} \right\|_F \right]
+\end{equation}
+
+\textbf{Theorem (Redundancy Bound):} In a trained transformer with $h$ heads, at least $\lfloor h/4 \rfloor$ heads can typically be pruned with less than 1\% accuracy loss.
+
+This surprising result suggests significant redundancy in multi-head attention, leading to recent work on dynamic head pruning.
+
+\subsubsection{Multi-Head Attention as Ensemble Learning}
+
+Multi-head attention can be viewed as an ensemble method with theoretical guarantees.
+
+\textbf{Theorem (Variance Reduction):} Let $\sigma^2$ be the variance of a single head's output. With $h$ independent heads, the ensemble variance is reduced to:
+\begin{equation}
+\text{Var}[\text{MultiHead}] \approx \frac{\sigma^2}{h} + \mathcal{O}\left(\frac{1}{h^2}\right)
+\end{equation}
+
+This variance reduction partially explains the stability and generalization benefits of multi-head attention.
+
+\subsection{What Different Heads Learn}
+
+Research has shown that different attention heads often specialize in different types of relationships:
+
+\begin{table}[H]
+\centering
+\caption{Typical Attention Head Specializations}
+\begin{tabular}{l l}
+\toprule
+\textbf{Head Type} & \textbf{Learned Pattern} \\
+\midrule
+Positional & Attends to adjacent or nearby tokens \\
+Syntactic & Tracks syntactic dependencies (e.g., subject-verb) \\
+Semantic & Groups semantically related words \\
+Rare tokens & Focuses on infrequent or important words \\
+Delimiter & Attends to punctuation and sentence boundaries \\
+Global & Broadly attends to many positions \\
+\bottomrule
+\end{tabular}
+\end{table}

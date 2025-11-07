@@ -1,0 +1,500 @@
+% Lines 4968-5465 from original attention_transformers_notes_ghost.tex
+% Appendix: Case Studies and Benchmarks
+
+%==============================================================================
+\section{Case Studies and Benchmarks}
+%==============================================================================
+
+\subsection{Comparative Analysis of Attention Variants}
+
+Let's implement a comprehensive benchmark comparing different attention mechanisms:
+
+\begin{lstlisting}[language=Python, caption=Attention Mechanism Benchmark]
+@dataclass(frozen=True)
+class BenchmarkResult:
+    method: str
+    memory_usage: float  # MB
+    computation_time: float  # ms
+    accuracy: float  # If applicable
+    parameters: int
+
+class AttentionBenchmark:
+    """Benchmark different attention mechanisms"""
+
+    def __init__(
+        self,
+        seq_lengths: list[int],
+        d_model: int,
+        n_heads: int,
+        batch_size: int,
+        device: str = "cuda"
+    ) -> None:
+        self.seq_lengths = seq_lengths
+        self.d_model = d_model
+        self.n_heads = n_heads
+        self.batch_size = batch_size
+        self.device = device
+
+        # Initialize attention mechanisms
+        self.methods = {
+            "standard": nn.MultiheadAttention(
+                d_model, n_heads, batch_first=True
+            ),
+            "linear": LinearMultiHeadAttention(
+                LinearAttentionConfig(d_model, n_heads)
+            ),
+            "sparse_local": self._create_sparse_attention("local"),
+            "sparse_strided": self._create_sparse_attention("strided"),
+        }
+
+        # Move to device
+        for method in self.methods.values():
+            method.to(device)
+
+    def _create_sparse_attention(self, pattern: str) -> nn.Module:
+        """Create sparse attention module"""
+        # Placeholder for sparse attention
+        return nn.MultiheadAttention(
+            self.d_model, self.n_heads, batch_first=True
+        )
+
+    def benchmark(self) -> pd.DataFrame:
+        """Run comprehensive benchmark"""
+        results = []
+
+        for seq_len in self.seq_lengths:
+            # Create dummy input
+            x = torch.randn(
+                self.batch_size, seq_len, self.d_model
+            ).to(self.device)
+
+            for method_name, method in self.methods.items():
+                result = self._benchmark_single(
+                    method_name, method, x
+                )
+                result['seq_length'] = seq_len
+                results.append(result)
+
+        return pd.DataFrame(results)
+
+    def _benchmark_single(
+        self,
+        method_name: str,
+        method: nn.Module,
+        x: Tensor
+    ) -> dict:
+        """Benchmark single method"""
+
+        # Warmup
+        for _ in range(10):
+            with torch.no_grad():
+                _ = method(x, x, x)
+
+        # Memory measurement
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats()
+
+        start_mem = torch.cuda.memory_allocated() / 1024 / 1024  # MB
+
+        # Time measurement
+        start_time = time.time()
+
+        with torch.no_grad():
+            for _ in range(100):
+                output = method(x, x, x)
+                if isinstance(output, tuple):
+                    output = output[0]
+
+        end_time = time.time()
+        peak_mem = torch.cuda.max_memory_allocated() / 1024 / 1024  # MB
+
+        # Calculate metrics
+        computation_time = (end_time - start_time) / 100 * 1000  # ms
+        memory_usage = peak_mem - start_mem
+
+        # Count parameters
+        params = sum(p.numel() for p in method.parameters())
+
+        return {
+            'method': method_name,
+            'memory_usage': memory_usage,
+            'computation_time': computation_time,
+            'parameters': params
+        }
+
+    def plot_results(self, df: pd.DataFrame) -> None:
+        """Visualize benchmark results"""
+
+        fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+
+        # Time vs sequence length
+        ax = axes[0, 0]
+        for method in df['method'].unique():
+            method_df = df[df['method'] == method]
+            ax.plot(
+                method_df['seq_length'],
+                method_df['computation_time'],
+                marker='o',
+                label=method
+            )
+        ax.set_xlabel('Sequence Length')
+        ax.set_ylabel('Computation Time (ms)')
+        ax.set_title('Computation Time vs Sequence Length')
+        ax.legend()
+        ax.grid(True)
+
+        # Memory vs sequence length
+        ax = axes[0, 1]
+        for method in df['method'].unique():
+            method_df = df[df['method'] == method]
+            ax.plot(
+                method_df['seq_length'],
+                method_df['memory_usage'],
+                marker='o',
+                label=method
+            )
+        ax.set_xlabel('Sequence Length')
+        ax.set_ylabel('Memory Usage (MB)')
+        ax.set_title('Memory Usage vs Sequence Length')
+        ax.legend()
+        ax.grid(True)
+
+        # Time complexity (log scale)
+        ax = axes[1, 0]
+        for method in df['method'].unique():
+            method_df = df[df['method'] == method]
+            ax.loglog(
+                method_df['seq_length'],
+                method_df['computation_time'],
+                marker='o',
+                label=method
+            )
+        ax.set_xlabel('Sequence Length (log)')
+        ax.set_ylabel('Computation Time (log ms)')
+        ax.set_title('Time Complexity Analysis')
+        ax.legend()
+        ax.grid(True)
+
+        # Parameter efficiency
+        ax = axes[1, 1]
+        methods = df['method'].unique()
+        params = [df[df['method'] == m]['parameters'].iloc[0] for m in methods]
+        avg_time = [df[df['method'] == m]['computation_time'].mean() for m in methods]
+
+        ax.scatter(params, avg_time, s=100)
+        for i, method in enumerate(methods):
+            ax.annotate(method, (params[i], avg_time[i]))
+
+        ax.set_xlabel('Number of Parameters')
+        ax.set_ylabel('Average Computation Time (ms)')
+        ax.set_title('Parameter Efficiency')
+        ax.grid(True)
+
+        plt.tight_layout()
+        plt.show()
+\end{lstlisting}
+
+\subsection{Real-World Applications}
+
+\subsubsection{Document Retrieval with Transformers}
+
+Implement a transformer-based document retrieval system:
+
+\begin{lstlisting}[language=Python, caption=Document Retrieval System]
+@dataclass(frozen=True)
+class DocumentRetrieverConfig:
+    max_doc_length: int = 512
+    max_query_length: int = 64
+    d_model: int = 768
+    n_heads: int = 12
+    n_layers: int = 6
+    retrieval_method: str = "dot_product"  # "dot_product", "cosine", "learned"
+
+class DocumentEncoder(nn.Module):
+    """Encode documents into dense representations"""
+
+    def __init__(self, config: DocumentRetrieverConfig) -> None:
+        super().__init__()
+        self.config = config
+
+        # Token embeddings
+        self.token_embed = nn.Embedding(30522, config.d_model)  # BERT vocab size
+        self.pos_embed = nn.Embedding(config.max_doc_length, config.d_model)
+
+        # Transformer encoder
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=config.d_model,
+            nhead=config.n_heads,
+            dim_feedforward=config.d_model * 4,
+            batch_first=True
+        )
+        self.encoder = nn.TransformerEncoder(
+            encoder_layer,
+            num_layers=config.n_layers
+        )
+
+        # Pooling strategy
+        self.pooler = nn.Linear(config.d_model, config.d_model)
+        self.activation = nn.Tanh()
+
+    def forward(
+        self,
+        input_ids: Tensor,
+        attention_mask: Tensor
+    ) -> Tensor:
+        batch_size, seq_len = input_ids.shape
+
+        # Embeddings
+        token_emb = self.token_embed(input_ids)
+        pos_ids = torch.arange(seq_len, device=input_ids.device)
+        pos_emb = self.pos_embed(pos_ids).unsqueeze(0)
+
+        embeddings = token_emb + pos_emb
+
+        # Transformer encoding
+        # Convert attention mask to transformer format
+        mask = attention_mask.float()
+        mask = mask.masked_fill(mask == 0, float('-inf'))
+        mask = mask.masked_fill(mask == 1, float(0.0))
+
+        encoded = self.encoder(embeddings, src_key_padding_mask=mask)
+
+        # Pool to get document representation
+        # Use [CLS] token representation
+        cls_repr = encoded[:, 0]
+        pooled = self.activation(self.pooler(cls_repr))
+
+        return pooled
+
+class CrossEncoderRanker(nn.Module):
+    """Cross-encoder for re-ranking documents"""
+
+    def __init__(self, config: DocumentRetrieverConfig) -> None:
+        super().__init__()
+        self.config = config
+
+        # Shared token embeddings
+        self.token_embed = nn.Embedding(30522, config.d_model)
+        self.segment_embed = nn.Embedding(2, config.d_model)
+        self.pos_embed = nn.Embedding(
+            config.max_doc_length + config.max_query_length,
+            config.d_model
+        )
+
+        # Transformer encoder
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=config.d_model,
+            nhead=config.n_heads,
+            dim_feedforward=config.d_model * 4,
+            batch_first=True
+        )
+        self.encoder = nn.TransformerEncoder(
+            encoder_layer,
+            num_layers=config.n_layers
+        )
+
+        # Classification head
+        self.classifier = nn.Sequential(
+            nn.Linear(config.d_model, config.d_model),
+            nn.Tanh(),
+            nn.Dropout(0.1),
+            nn.Linear(config.d_model, 1)
+        )
+
+    def forward(
+        self,
+        query_ids: Tensor,
+        doc_ids: Tensor,
+        query_mask: Tensor,
+        doc_mask: Tensor
+    ) -> Tensor:
+        batch_size = query_ids.shape[0]
+
+        # Concatenate query and document
+        input_ids = torch.cat([query_ids, doc_ids], dim=1)
+        attention_mask = torch.cat([query_mask, doc_mask], dim=1)
+
+        # Create segment embeddings
+        query_len = query_ids.shape[1]
+        doc_len = doc_ids.shape[1]
+        segment_ids = torch.cat([
+            torch.zeros(batch_size, query_len, dtype=torch.long),
+            torch.ones(batch_size, doc_len, dtype=torch.long)
+        ], dim=1).to(input_ids.device)
+
+        # Embeddings
+        token_emb = self.token_embed(input_ids)
+        segment_emb = self.segment_embed(segment_ids)
+        pos_ids = torch.arange(
+            input_ids.shape[1],
+            device=input_ids.device
+        ).unsqueeze(0)
+        pos_emb = self.pos_embed(pos_ids)
+
+        embeddings = token_emb + segment_emb + pos_emb
+
+        # Encode
+        mask = attention_mask.float()
+        mask = mask.masked_fill(mask == 0, float('-inf'))
+        mask = mask.masked_fill(mask == 1, float(0.0))
+
+        encoded = self.encoder(embeddings, src_key_padding_mask=mask)
+
+        # Classify relevance
+        cls_repr = encoded[:, 0]
+        relevance_score = self.classifier(cls_repr)
+
+        return relevance_score.squeeze(-1)
+
+class HybridRetriever:
+    """Combine dense and sparse retrieval"""
+
+    def __init__(
+        self,
+        doc_encoder: DocumentEncoder,
+        cross_encoder: CrossEncoderRanker,
+        index_type: str = "faiss"  # "faiss", "annoy", "custom"
+    ) -> None:
+        self.doc_encoder = doc_encoder
+        self.cross_encoder = cross_encoder
+        self.index_type = index_type
+
+        # Document index
+        self.doc_embeddings: Tensor | None = None
+        self.doc_ids: list[str] = []
+
+        # For FAISS indexing
+        if index_type == "faiss":
+            import faiss
+            self.index = None
+
+    def index_documents(
+        self,
+        documents: list[dict[str, Any]],
+        batch_size: int = 32
+    ) -> None:
+        """Index documents for retrieval"""
+
+        self.doc_encoder.eval()
+        all_embeddings = []
+
+        with torch.no_grad():
+            for i in range(0, len(documents), batch_size):
+                batch = documents[i:i + batch_size]
+
+                # Tokenize (simplified)
+                input_ids = torch.tensor([
+                    doc['token_ids'] for doc in batch
+                ])
+                attention_mask = torch.tensor([
+                    doc['attention_mask'] for doc in batch
+                ])
+
+                # Encode
+                embeddings = self.doc_encoder(input_ids, attention_mask)
+                all_embeddings.append(embeddings.cpu())
+
+                # Store document IDs
+                self.doc_ids.extend([doc['id'] for doc in batch])
+
+        # Combine embeddings
+        self.doc_embeddings = torch.cat(all_embeddings, dim=0)
+
+        # Build index
+        if self.index_type == "faiss":
+            import faiss
+
+            # Normalize embeddings for cosine similarity
+            embeddings_np = self.doc_embeddings.numpy()
+            faiss.normalize_L2(embeddings_np)
+
+            # Build index
+            d = embeddings_np.shape[1]
+            self.index = faiss.IndexFlatIP(d)  # Inner product
+            self.index.add(embeddings_np)
+
+    def retrieve(
+        self,
+        queries: list[dict[str, Any]],
+        k: int = 100,
+        rerank_top_k: int = 10
+    ) -> list[list[dict[str, Any]]]:
+        """Retrieve and rerank documents"""
+
+        self.doc_encoder.eval()
+        self.cross_encoder.eval()
+
+        results = []
+
+        with torch.no_grad():
+            for query in queries:
+                # Encode query
+                query_ids = torch.tensor([query['token_ids']])
+                query_mask = torch.tensor([query['attention_mask']])
+
+                query_emb = self.doc_encoder(query_ids, query_mask)
+
+                # Initial retrieval
+                if self.index_type == "faiss":
+                    query_np = query_emb.cpu().numpy()
+                    faiss.normalize_L2(query_np)
+
+                    distances, indices = self.index.search(query_np, k)
+
+                    # Get top-k documents
+                    top_docs = []
+                    for idx, score in zip(indices[0], distances[0]):
+                        top_docs.append({
+                            'id': self.doc_ids[idx],
+                            'initial_score': float(score),
+                            'index': idx
+                        })
+
+                # Re-rank top documents with cross-encoder
+                if rerank_top_k > 0 and len(top_docs) > 0:
+                    rerank_docs = top_docs[:rerank_top_k]
+
+                    # Prepare batch for cross-encoder
+                    doc_indices = [doc['index'] for doc in rerank_docs]
+
+                    # Get document tokens (simplified)
+                    doc_ids_batch = torch.stack([
+                        torch.tensor(documents[idx]['token_ids'])
+                        for idx in doc_indices
+                    ])
+                    doc_mask_batch = torch.stack([
+                        torch.tensor(documents[idx]['attention_mask'])
+                        for idx in doc_indices
+                    ])
+
+                    # Expand query for batch
+                    query_ids_batch = query_ids.expand(len(rerank_docs), -1)
+                    query_mask_batch = query_mask.expand(len(rerank_docs), -1)
+
+                    # Get relevance scores
+                    relevance_scores = self.cross_encoder(
+                        query_ids_batch,
+                        doc_ids_batch,
+                        query_mask_batch,
+                        doc_mask_batch
+                    )
+
+                    # Update scores
+                    for i, doc in enumerate(rerank_docs):
+                        doc['rerank_score'] = float(relevance_scores[i])
+
+                    # Sort by rerank score
+                    rerank_docs.sort(
+                        key=lambda x: x['rerank_score'],
+                        reverse=True
+                    )
+
+                    # Combine reranked and remaining
+                    final_docs = rerank_docs + top_docs[rerank_top_k:]
+                else:
+                    final_docs = top_docs
+
+                results.append(final_docs)
+
+        return results
+\end{lstlisting}

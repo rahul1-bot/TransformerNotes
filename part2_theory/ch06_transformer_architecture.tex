@@ -1,0 +1,457 @@
+% Lines 1143-1597 from original attention_transformers_notes_ghost.tex
+% Chapter 6: The Transformer Architecture
+
+%==============================================================================
+\section{The Transformer Architecture}
+%==============================================================================
+
+\subsection{Overview: Attention is All You Need}
+
+The transformer architecture, introduced by Vaswani et al. (2017), revolutionized sequence modeling by relying entirely on attention mechanisms, dispensing with recurrence and convolutions. The key insights were:
+
+\begin{enumerate}
+    \item \textbf{Parallel Processing}: All positions can be processed simultaneously
+    \item \textbf{Direct Connections}: Any two positions can interact directly through attention
+    \item \textbf{Computational Efficiency}: Despite $O(n^2)$ attention complexity, parallelization makes training much faster
+    \item \textbf{Interpretability}: Attention weights provide insight into model decisions
+\end{enumerate}
+
+\subsection{Architecture Components}
+
+The transformer consists of an encoder and decoder, each composed of stacked identical layers.
+
+\begin{figure}[H]
+\centering
+\tikzset{
+    enc/.style={draw, fill=nodegreen!45, minimum width=3.4cm, minimum height=0.9cm, rounded corners=2pt},
+    dec/.style={draw, fill=nodeblue!45, minimum width=3.4cm, minimum height=0.9cm, rounded corners=2pt},
+    norm/.style={draw, fill=gray!30, minimum width=3.4cm, minimum height=0.55cm, rounded corners=2pt},
+    ff/.style={draw, fill=nodegreen!20, minimum width=3.4cm, minimum height=0.9cm, rounded corners=2pt},
+    box/.style={draw, fill=gray!15, minimum width=3.2cm, minimum height=0.8cm, rounded corners=2pt},
+    thinbox/.style={draw, fill=yellow!20, minimum width=3.2cm, minimum height=0.8cm, rounded corners=2pt},
+    label/.style={font=\bfseries},
+    arr/.style={->,>=stealth,thick},
+    res/.style={->,>=stealth,thick,rounded corners=2pt,black!70}
+}
+\begin{tikzpicture}[node distance=7mm and 18mm]
+    % Bottom: embeddings + positional encoding + add
+    % Left (Encoder side)
+    \node[box] (embE) at (-6,-7) {Input Embedding};
+    \node[thinbox, above=4mm of embE] (posE) {Positional Encoding};
+    \node[circle, draw, above=4mm of posE, minimum size=6mm] (addE) {+};
+    \draw[arr] (embE) -- (posE);
+    \draw[arr] (posE) -- (addE);
+
+    % Right (Decoder side)
+    \node[box] (embD) at (6,-7) {Output Embedding (shifted)};
+    \node[thinbox, above=4mm of embD] (posD) {Positional Encoding};
+    \node[circle, draw, above=4mm of posD, minimum size=6mm] (addD) {+};
+    \draw[arr] (embD) -- (posD);
+    \draw[arr] (posD) -- (addD);
+
+    % Encoder stack (single layer, bracketed N×)
+    \node[enc, above=14mm of addE] (e_att1) {Multi-Head Attention};
+    \node[norm, above=3mm of e_att1] (e_norm1) {Add \& Norm};
+    \node[ff, above=3mm of e_norm1] (e_ff1) {Feed Forward};
+    \node[norm, above=3mm of e_ff1] (e_norm2) {Add \& Norm};
+    % Entry to first encoder sublayer via internal anchor (keeps skip inside box)
+    \path (e_att1.west) ++(-0.25,0) coordinate (e_in);
+    \draw[arr] (addE) -- (e_in) -- (e_att1.west);
+    \draw[arr] (e_att1) -- (e_norm1);
+    \draw[arr] (e_norm1) -- (e_ff1);
+    \draw[arr] (e_ff1) -- (e_norm2);
+
+    % Encoder residual (skip) connections — drawn inside bracket
+    \draw[res] (e_in) -- ++(-0.5,0) |- (e_norm1.west);
+    \draw[res] (e_norm1.west) -- ++(-0.5,0) |- (e_norm2.west);
+
+    % Encoder bracket N×
+    \node[draw, dashed, inner sep=12pt, fit=(e_att1)(e_norm2)] (encbox) {};
+    \node[below left=0.1cm of encbox] {N×};
+    \node[above=2mm of encbox, label] {Encoder};
+
+    % Decoder stack (one layer, bracketed N×): masked self-attn -> norm -> cross-attn -> norm -> FF -> norm
+    \node[dec, above=14mm of addD] (d_self) {Masked Multi-Head Attention};
+    \node[norm, above=3mm of d_self] (d_norm1) {Add \& Norm};
+    \node[dec, above=3mm of d_norm1] (d_cross) {Multi-Head Attention (cross)};
+    \node[norm, above=3mm of d_cross] (d_norm2) {Add \& Norm};
+    \node[dec, above=3mm of d_norm2, fill=nodeblue!35] (d_ff) {Feed Forward};
+    \node[norm, above=3mm of d_ff] (d_norm3) {Add \& Norm};
+    % Entry to first decoder sublayer via internal anchor
+    \path (d_self.west) ++(-0.25,0) coordinate (d_in);
+    \draw[arr] (addD) -- (d_in) -- (d_self.west);
+    \draw[arr] (d_self) -- (d_norm1);
+    \draw[arr] (d_norm1) -- (d_cross);
+    \draw[arr] (d_cross) -- (d_norm2);
+    \draw[arr] (d_norm2) -- (d_ff);
+    \draw[arr] (d_ff) -- (d_norm3);
+
+    % Decoder residual (skip) connections — inside bracket
+    \draw[res] (d_in) -- ++(-0.5,0) |- (d_norm1.west);
+    \draw[res] (d_norm1.west) -- ++(-0.5,0) |- (d_norm2.west);
+    \draw[res] (d_norm2.west) -- ++(-0.5,0) |- (d_norm3.west);
+
+    % Decoder head
+    \node[box, above=12mm of d_norm3] (linear) {Linear};
+    \node[box, above=3mm of linear, fill=orange!20] (softmax) {Softmax};
+    \node[box, above=3mm of softmax] (outprob) {Output Probabilities};
+    \draw[arr] (d_norm3) -- (linear);
+    \draw[arr] (linear) -- (softmax);
+    \draw[arr] (softmax) -- (outprob);
+
+    % Decoder bracket N×
+    \node[draw, dashed, inner sep=12pt, fit=(d_self)(d_norm3)] (decbox) {};
+    \node[below left=0.1cm of decbox] {N×};
+    \node[above=2mm of decbox, label] {Decoder};
+
+    % Cross-attention connections (clean, curved)
+    \draw[arr, red] (e_norm2.east) to[bend left=12] node[midway, above, sloped] {K,V} (d_cross.west);
+
+    % Titles
+    \node[font=\Large\bfseries, above=10mm of outprob] {The Transformer Architecture};
+\end{tikzpicture}
+\caption{Complete Transformer Architecture}
+\label{fig:transformer-architecture}
+\end{figure}
+
+\subsection{Encoder Layer}
+
+Each encoder layer consists of two sub-layers:
+\begin{enumerate}
+    \item Multi-head self-attention
+    \item Position-wise feed-forward network
+\end{enumerate}
+
+\subsubsection{Residual Connections and Layer Normalization}
+
+Around each sub-layer, we employ:
+\begin{itemize}
+    \item \textbf{Residual connection}: Helps with gradient flow and enables deep networks
+    \item \textbf{Layer normalization}: Stabilizes training
+\end{itemize}
+
+The output of each sub-layer is:
+\begin{equation}
+\text{LayerNorm}(x + \text{Sublayer}(x))
+\end{equation}
+\begin{notationbox}
+\textbf{Notation:}
+\begin{itemize}
+    \item $x$: Input to the sub-layer
+    \item $\text{Sublayer}(x)$: The sub-layer function (attention or feed-forward)
+    \item $\text{LayerNorm}$: Layer normalization
+\end{itemize}
+\end{notationbox}
+
+\subsubsection{Position-wise Feed-Forward Networks}
+
+The feed-forward network applies the same fully connected network to each position:
+
+\begin{equation}
+\text{FFN}(x) = \max(0, x\mathbf{W}_1 + \mathbf{b}_1)\mathbf{W}_2 + \mathbf{b}_2
+\end{equation}
+\begin{notationbox}
+\textbf{Notation:}
+\begin{itemize}
+    \item $\mathbf{W}_1 \in \mathbb{R}^{d_{model} \times d_{ff}}$: First layer weights
+    \item $\mathbf{W}_2 \in \mathbb{R}^{d_{ff} \times d_{model}}$: Second layer weights
+    \item $d_{ff}$: Feed-forward dimension (typically $4 \times d_{model}$)
+    \item ReLU activation between layers
+\end{itemize}
+\end{notationbox}
+
+\subsection{Decoder Layer}
+
+Each decoder layer has three sub-layers:
+\begin{enumerate}
+    \item Masked multi-head self-attention
+    \item Multi-head cross-attention (encoder-decoder attention)
+    \item Position-wise feed-forward network
+\end{enumerate}
+
+\subsubsection{Masked Self-Attention}
+
+The decoder uses masked self-attention to prevent positions from attending to subsequent positions. This ensures the model can only use information from past positions during training, maintaining the autoregressive property.
+
+The mask is implemented by setting attention scores to $-\infty$ before softmax:
+\begin{equation}
+\text{Mask}_{ij} = \begin{cases}
+0 & \text{if } i \geq j \\
+-\infty & \text{if } i < j
+\end{cases}
+\end{equation}
+
+\subsubsection{Cross-Attention}
+
+The second attention layer in the decoder performs multi-head attention over the encoder output:
+\begin{itemize}
+    \item Queries come from the previous decoder layer
+    \item Keys and values come from the encoder output
+    \item This allows every decoder position to attend to all encoder positions
+\end{itemize}
+
+\subsection{Positional Encoding}
+
+Since transformers have no inherent notion of position or order, we must inject positional information. The original paper uses sinusoidal positional encodings:
+
+\begin{align}
+PE_{(pos,2i)} &= \sin(pos/10000^{2i/d_{model}}) \\
+PE_{(pos,2i+1)} &= \cos(pos/10000^{2i/d_{model}})
+\end{align}
+\begin{notationbox}
+\textbf{Notation:}
+\begin{itemize}
+    \item $pos$: Position in the sequence
+    \item $i$: Dimension index
+    \item $d_{model}$: Model dimension
+    \item Each dimension uses a different frequency
+\end{itemize}
+\end{notationbox}
+
+\subsubsection{Why Sinusoidal?}
+
+Sinusoidal encodings have several advantages:
+\begin{enumerate}
+    \item \textbf{Unique encoding}: Each position gets a unique encoding
+    \item \textbf{Relative positions}: The encoding for position $pos + k$ can be represented as a linear function of the encoding at $pos$
+    \item \textbf{Extrapolation}: Can handle sequences longer than those seen during training
+    \item \textbf{No parameters}: Unlike learned positional embeddings
+\end{enumerate}
+
+\subsection{Theoretical Analysis of Positional Encodings}
+
+\subsubsection{Fourier Analysis of Sinusoidal Encodings}
+
+The sinusoidal positional encoding can be understood through Fourier analysis, revealing deep connections to signal processing.
+
+\textbf{Theorem (Fourier Basis Interpretation):} The sinusoidal positional encoding forms a truncated Fourier basis where each position is represented as:
+\begin{equation}
+\text{PE}(pos) = \sum_{i=0}^{d_{model}/2-1} \left[\sin(\omega_i \cdot pos) \cdot \mathbf{e}_{2i} + \cos(\omega_i \cdot pos) \cdot \mathbf{e}_{2i+1}\right]
+\end{equation}
+where $\omega_i = 1/10000^{2i/d_{model}}$ are the frequencies.
+
+\begin{notationbox}
+\textbf{Notation:}
+\begin{itemize}
+    \item $\omega_i$: Frequency for dimension $i$
+    \item $\mathbf{e}_j$: Standard basis vector for dimension $j$
+    \item The frequencies form a geometric progression
+\end{itemize}
+\end{notationbox}
+
+\textbf{Proposition (Relative Position Property):} For any fixed offset $k$, there exists a linear transformation $\mathbf{T}_k$ such that:
+\begin{equation}
+\text{PE}(pos + k) = \mathbf{T}_k \cdot \text{PE}(pos)
+\end{equation}
+
+\textbf{Proof:} Using trigonometric identities:
+\begin{align}
+\sin(\omega(pos + k)) &= \sin(\omega \cdot pos)\cos(\omega \cdot k) + \cos(\omega \cdot pos)\sin(\omega \cdot k) \\
+\cos(\omega(pos + k)) &= \cos(\omega \cdot pos)\cos(\omega \cdot k) - \sin(\omega \cdot pos)\sin(\omega \cdot k)
+\end{align}
+
+This can be written in matrix form where $\mathbf{T}_k$ is a block-diagonal matrix with 2×2 rotation matrices.
+
+\subsubsection{Information-Theoretic Analysis of Position Representations}
+
+We analyze how much positional information different encoding schemes can represent.
+
+\textbf{Definition (Positional Information Capacity):} For encoding function $\text{PE}: \mathbb{N} \rightarrow \mathbb{R}^d$:
+\begin{equation}
+\mathcal{C}(\text{PE}) = \lim_{n \rightarrow \infty} \frac{\log |\{\text{PE}(i) : i \in [n]\}|}{n}
+\end{equation}
+
+\textbf{Caveat (Sinusoidal capacity):} Sinusoidal encodings do not add parameters with length, and pairwise distances can become arbitrarily small as positions grow. They still support linear relative-position computation, but there is no positive lower bound on $\|\text{PE}(i)-\text{PE}(j)\|_2$ as $i,j \to \infty$.
+
+\subsubsection{Learned vs Fixed Positional Encodings: Theoretical Trade-offs}
+
+\textbf{Theorem (Approximation Power):} Any continuous position-dependent function $f: [n] \times \mathbb{R}^d \rightarrow \mathbb{R}^d$ can be approximated by:
+\begin{itemize}
+    \item Learned embeddings: exactly (with $n$ parameters)
+    \item Sinusoidal: within error $\epsilon$ (with $O(\log(n/\epsilon))$ dimensions)
+\end{itemize}
+
+\textbf{Proof Sketch:} Learned embeddings can memorize any function on finite positions. Sinusoidal encodings approximate via Fourier series with convergence rate dependent on function smoothness.
+
+\subsubsection{Alternative Positional Encoding Schemes}
+
+We analyze theoretical properties of various positional encoding schemes:
+
+\textbf{1. Relative Positional Encoding:}
+\begin{equation}
+\text{Attention}_{ij} = \frac{\exp((\mathbf{q}_i^T\mathbf{k}_j + a_{i-j})/\sqrt{d_k})}{\sum_k \exp((\mathbf{q}_i^T\mathbf{k}_k + a_{i-k})/\sqrt{d_k})}
+\end{equation}
+
+where $a_{i-j}$ is a learned bias based on relative position.
+
+\textbf{Property:} Translation invariant - shifting all positions preserves relative attention patterns.
+
+\textbf{2. Rotary Position Embedding (RoPE):}
+\begin{equation}
+f_{\text{RoPE}}(\mathbf{x}, m) = \mathbf{R}_{\Theta,m} \mathbf{x}
+\end{equation}
+
+where $\mathbf{R}_{\Theta,m}$ is a rotation matrix dependent on position $m$.
+
+\textbf{Property:} Preserves inner products up to position-dependent rotation:
+\begin{equation}
+\langle f(\mathbf{q}, m), f(\mathbf{k}, n) \rangle = \langle \mathbf{q}, \mathbf{R}_{\Theta,n-m} \mathbf{k} \rangle
+\end{equation}
+
+\subsubsection{Theoretical Limitations of Position-Agnostic Attention}
+
+\textbf{Theorem (Permutation Invariance):} Without positional encoding, self-attention is permutation equivariant:
+\begin{equation}
+\text{Attention}(\mathbf{P}\mathbf{X}) = \mathbf{P}\text{Attention}(\mathbf{X})
+\end{equation}
+for any permutation matrix $\mathbf{P}$.
+
+\textbf{Corollary:} Position-agnostic transformers cannot solve tasks requiring position-dependent computation (e.g., sorting, counting).
+
+\textbf{Proof:} Any position-dependent function $f$ satisfies $f(\mathbf{X}) \neq f(\mathbf{P}\mathbf{X})$ for some permutation $\mathbf{P}$, but attention without positional encoding cannot distinguish these inputs.
+
+\subsection{Complete Transformer Implementation}
+
+Let's implement the complete transformer encoder:
+
+\begin{lstlisting}[language=Python, caption=Transformer Encoder Implementation]
+from __future__ import annotations
+from dataclasses import dataclass
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from typing import Optional
+import math
+
+
+@dataclass(frozen=True, slots=True)
+class TransformerConfig:
+    d_model: int = 512
+    n_heads: int = 8
+    n_layers: int = 6
+    d_ff: int = 2048
+    dropout: float = 0.1
+    max_seq_len: int = 5000
+
+    def __post_init__(self) -> None:
+        if self.d_model % self.n_heads != 0:
+            raise ValueError("d_model must be divisible by n_heads")
+        if self.d_ff < self.d_model:
+            raise ValueError("d_ff should typically be larger than d_model")
+
+
+class PositionalEncoding(nn.Module):
+    def __init__(self, config: TransformerConfig) -> None:
+        super().__init__()
+        self._d_model: int = config.d_model
+        self._dropout: nn.Dropout = nn.Dropout(config.dropout)
+
+        pe: torch.Tensor = self._create_positional_encoding(
+            config.max_seq_len, config.d_model
+        )
+        self.register_buffer('pe', pe)
+
+    def _create_positional_encoding(
+        self,
+        max_len: int,
+        d_model: int
+    ) -> torch.Tensor:
+        pe: torch.Tensor = torch.zeros(max_len, d_model)
+        position: torch.Tensor = torch.arange(0, max_len).unsqueeze(1).float()
+
+        div_term: torch.Tensor = torch.exp(
+            torch.arange(0, d_model, 2).float() *
+            -(math.log(10000.0) / d_model)
+        )
+
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+
+        return pe.unsqueeze(0)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        seq_len: int = x.size(1)
+        x = x + self.pe[:, :seq_len, :]
+        return self._dropout(x)
+
+
+class TransformerEncoderLayer(nn.Module):
+    def __init__(self, config: TransformerConfig) -> None:
+        super().__init__()
+        self._config: TransformerConfig = config
+
+        attention_config: AttentionConfig = AttentionConfig(
+            d_model=config.d_model,
+            n_heads=config.n_heads,
+            dropout=config.dropout
+        )
+
+        self._self_attention: MultiHeadAttention = MultiHeadAttention(
+            attention_config
+        )
+        self._feed_forward: FeedForwardNetwork = FeedForwardNetwork(
+            config.d_model, config.d_ff, config.dropout
+        )
+
+        self._norm1: nn.LayerNorm = nn.LayerNorm(config.d_model)
+        self._norm2: nn.LayerNorm = nn.LayerNorm(config.d_model)
+
+        self._dropout: nn.Dropout = nn.Dropout(config.dropout)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        # Self-attention with residual connection
+        attn_output: torch.Tensor = self._self_attention(x, x, x, mask)
+        x = self._norm1(x + self._dropout(attn_output))
+
+        # Feed-forward with residual connection
+        ff_output: torch.Tensor = self._feed_forward(x)
+        x = self._norm2(x + self._dropout(ff_output))
+
+        return x
+
+
+class FeedForwardNetwork(nn.Module):
+    def __init__(
+        self,
+        d_model: int,
+        d_ff: int,
+        dropout: float = 0.1
+    ) -> None:
+        super().__init__()
+        self._linear1: nn.Linear = nn.Linear(d_model, d_ff)
+        self._linear2: nn.Linear = nn.Linear(d_ff, d_model)
+        self._dropout: nn.Dropout = nn.Dropout(dropout)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = F.relu(self._linear1(x))
+        x = self._dropout(x)
+        x = self._linear2(x)
+        return x
+
+
+class TransformerEncoder(nn.Module):
+    def __init__(self, config: TransformerConfig) -> None:
+        super().__init__()
+        self._config: TransformerConfig = config
+
+        self._layers: nn.ModuleList = nn.ModuleList([
+            TransformerEncoderLayer(config)
+            for _ in range(config.n_layers)
+        ])
+
+        self._norm: nn.LayerNorm = nn.LayerNorm(config.d_model)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        for layer in self._layers:
+            x = layer(x, mask)
+
+        return self._norm(x)
+\end{lstlisting}

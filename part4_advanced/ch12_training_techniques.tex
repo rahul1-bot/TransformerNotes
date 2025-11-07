@@ -1,0 +1,555 @@
+% Lines 3261-3812 from original attention_transformers_notes_ghost.tex
+% Chapter 12: Advanced Training Techniques
+
+\section{Advanced Training Techniques}
+%==============================================================================
+
+\subsection{Optimization Strategies for Transformers}
+
+\subsubsection{Learning Rate Scheduling}
+
+The original transformer paper introduced a custom learning rate schedule:
+
+\begin{equation}
+\text{lr} = d_{\text{model}}^{-0.5} \cdot \min(\text{step}^{-0.5}, \text{step} \cdot \text{warmup}^{-1.5})
+\end{equation}
+
+\begin{notationbox}
+\textbf{Notation:}
+\begin{itemize}
+    \item $d_{\text{model}}$: Model dimension
+    \item $\text{step}$: Current training step
+    \item $\text{warmup}$: Number of warmup steps
+\end{itemize}
+\end{notationbox}
+
+Let's implement various learning rate schedules:
+
+\begin{lstlisting}[language=Python, caption=Advanced Learning Rate Schedules]
+from __future__ import annotations
+import math
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+import torch.optim as optim
+
+@dataclass(frozen=True, slots=True)
+class ScheduleConfig:
+    optimizer: optim.Optimizer
+    d_model: int
+    warmup_steps: int = 4000
+
+class LRScheduler(ABC):
+    """Abstract base class for learning rate schedulers"""
+
+    def __init__(self, config: ScheduleConfig) -> None:
+        self.config = config
+        self.step_num = 0
+
+    @abstractmethod
+    def get_lr(self) -> float:
+        """Get current learning rate"""
+        pass
+
+    def step(self) -> None:
+        """Update learning rate"""
+        self.step_num += 1
+        lr = self.get_lr()
+        for param_group in self.config.optimizer.param_groups:
+            param_group['lr'] = lr
+
+class TransformerLRScheduler(LRScheduler):
+    """Original transformer learning rate schedule"""
+
+    def get_lr(self) -> float:
+        step = max(1, self.step_num)
+        scale = self.config.d_model ** -0.5
+
+        return scale * min(
+            step ** -0.5,
+            step * self.config.warmup_steps ** -1.5
+        )
+
+class CosineAnnealingWarmup(LRScheduler):
+    """Cosine annealing with linear warmup"""
+
+    def __init__(
+        self,
+        config: ScheduleConfig,
+        max_lr: float,
+        min_lr: float,
+        total_steps: int
+    ) -> None:
+        super().__init__(config)
+        self.max_lr = max_lr
+        self.min_lr = min_lr
+        self.total_steps = total_steps
+
+    def get_lr(self) -> float:
+        if self.step_num < self.config.warmup_steps:
+            # Linear warmup
+            return self.max_lr * self.step_num / self.config.warmup_steps
+        else:
+            # Cosine annealing
+            progress = (self.step_num - self.config.warmup_steps) / \
+                      (self.total_steps - self.config.warmup_steps)
+            return self.min_lr + (self.max_lr - self.min_lr) * \
+                   0.5 * (1 + math.cos(math.pi * progress))
+
+class PolynomialDecayWarmup(LRScheduler):
+    """Polynomial decay with warmup"""
+
+    def __init__(
+        self,
+        config: ScheduleConfig,
+        max_lr: float,
+        end_lr: float,
+        power: float,
+        total_steps: int
+    ) -> None:
+        super().__init__(config)
+        self.max_lr = max_lr
+        self.end_lr = end_lr
+        self.power = power
+        self.total_steps = total_steps
+
+    def get_lr(self) -> float:
+        if self.step_num < self.config.warmup_steps:
+            # Linear warmup
+            return self.max_lr * self.step_num / self.config.warmup_steps
+        elif self.step_num >= self.total_steps:
+            return self.end_lr
+        else:
+            # Polynomial decay
+            decay_steps = self.total_steps - self.config.warmup_steps
+            decay_progress = (self.step_num - self.config.warmup_steps) / decay_steps
+            return self.end_lr + (self.max_lr - self.end_lr) * \
+                   (1 - decay_progress) ** self.power
+\end{lstlisting}
+
+\subsubsection{Gradient Accumulation and Mixed Precision}
+
+Handle large models with limited memory:
+
+\begin{lstlisting}[language=Python, caption=Gradient Accumulation with Mixed Precision]
+from torch.cuda.amp import autocast, GradScaler
+
+class TransformerTrainer:
+    """Advanced trainer for transformer models"""
+
+    def __init__(
+        self,
+        model: nn.Module,
+        optimizer: optim.Optimizer,
+        accumulation_steps: int = 4,
+        use_amp: bool = True,
+        clip_grad_norm: float = 1.0
+    ) -> None:
+        self.model = model
+        self.optimizer = optimizer
+        self.accumulation_steps = accumulation_steps
+        self.use_amp = use_amp
+        self.clip_grad_norm = clip_grad_norm
+
+        # Mixed precision training
+        self.scaler = GradScaler() if use_amp else None
+
+        # Training statistics
+        self.step = 0
+        self.accumulated_loss = 0.0
+
+    def train_step(
+        self,
+        batch: dict[str, Tensor],
+        criterion: nn.Module
+    ) -> dict[str, float]:
+        """Single training step with gradient accumulation"""
+
+        # Adjust loss for accumulation
+        loss_scale = 1.0 / self.accumulation_steps
+
+        # Forward pass with mixed precision
+        if self.use_amp:
+            with autocast():
+                outputs = self.model(
+                    batch['input_ids'],
+                    attention_mask=batch.get('attention_mask')
+                )
+                loss = criterion(outputs, batch['labels'])
+                loss = loss * loss_scale
+        else:
+            outputs = self.model(
+                batch['input_ids'],
+                attention_mask=batch.get('attention_mask')
+            )
+            loss = criterion(outputs, batch['labels'])
+            loss = loss * loss_scale
+
+        # Backward pass
+        if self.use_amp:
+            self.scaler.scale(loss).backward()
+        else:
+            loss.backward()
+
+        # Accumulate loss for logging
+        self.accumulated_loss += loss.item()
+
+        # Update weights every accumulation_steps
+        if (self.step + 1) % self.accumulation_steps == 0:
+            # Gradient clipping
+            if self.use_amp:
+                self.scaler.unscale_(self.optimizer)
+
+            torch.nn.utils.clip_grad_norm_(
+                self.model.parameters(),
+                self.clip_grad_norm
+            )
+
+            # Optimizer step
+            if self.use_amp:
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                self.optimizer.step()
+
+            self.optimizer.zero_grad()
+
+            # Log accumulated loss
+            avg_loss = self.accumulated_loss
+            self.accumulated_loss = 0.0
+
+            self.step += 1
+
+            return {'loss': avg_loss, 'step': self.step}
+
+        self.step += 1
+        return {}
+\end{lstlisting}
+
+\subsubsection{Dynamic Batching and Sequence Packing}
+
+Optimize training efficiency with variable-length sequences:
+
+\begin{lstlisting}[language=Python, caption=Dynamic Batching Implementation]
+from typing import Sequence
+import numpy as np
+
+@dataclass(frozen=True)
+class DynamicBatch:
+    """Batch with sequences of varying lengths"""
+    input_ids: Tensor
+    attention_mask: Tensor
+    labels: Tensor | None
+    seq_lens: list[int]
+
+class DynamicBatcher:
+    """Create efficient batches from variable-length sequences"""
+
+    def __init__(
+        self,
+        max_tokens: int,
+        max_sequences: int,
+        pad_token_id: int
+    ) -> None:
+        self.max_tokens = max_tokens
+        self.max_sequences = max_sequences
+        self.pad_token_id = pad_token_id
+
+    def create_batches(
+        self,
+        sequences: list[list[int]],
+        labels: list[list[int]] | None = None
+    ) -> list[DynamicBatch]:
+        """Create batches optimizing for GPU utilization"""
+
+        # Sort sequences by length for better packing
+        sorted_indices = np.argsort([len(seq) for seq in sequences])[::-1]
+        sorted_sequences = [sequences[i] for i in sorted_indices]
+        sorted_labels = [labels[i] for i in sorted_indices] if labels else None
+
+        batches = []
+        current_batch = []
+        current_labels = [] if labels else None
+        current_tokens = 0
+
+        for i, seq in enumerate(sorted_sequences):
+            seq_len = len(seq)
+
+            # Check if adding this sequence exceeds limits
+            if current_batch:
+                max_len_in_batch = max(len(s) for s in current_batch)
+                new_max_len = max(max_len_in_batch, seq_len)
+                new_total_tokens = new_max_len * (len(current_batch) + 1)
+
+                if (new_total_tokens > self.max_tokens or
+                    len(current_batch) >= self.max_sequences):
+                    # Finalize current batch
+                    batch = self._create_batch(
+                        current_batch,
+                        current_labels
+                    )
+                    batches.append(batch)
+
+                    # Start new batch
+                    current_batch = [seq]
+                    current_labels = [sorted_labels[i]] if labels else None
+                else:
+                    current_batch.append(seq)
+                    if labels:
+                        current_labels.append(sorted_labels[i])
+            else:
+                current_batch = [seq]
+                current_labels = [sorted_labels[i]] if labels else None
+
+        # Don't forget last batch
+        if current_batch:
+            batch = self._create_batch(current_batch, current_labels)
+            batches.append(batch)
+
+        return batches
+
+    def _create_batch(
+        self,
+        sequences: list[list[int]],
+        labels: list[list[int]] | None
+    ) -> DynamicBatch:
+        """Create padded batch from sequences"""
+
+        seq_lens = [len(seq) for seq in sequences]
+        max_len = max(seq_lens)
+        batch_size = len(sequences)
+
+        # Pad sequences
+        padded_input = torch.full(
+            (batch_size, max_len),
+            self.pad_token_id,
+            dtype=torch.long
+        )
+
+        attention_mask = torch.zeros(
+            (batch_size, max_len),
+            dtype=torch.float
+        )
+
+        for i, seq in enumerate(sequences):
+            padded_input[i, :len(seq)] = torch.tensor(seq)
+            attention_mask[i, :len(seq)] = 1.0
+
+        # Handle labels if provided
+        padded_labels = None
+        if labels:
+            padded_labels = torch.full(
+                (batch_size, max_len),
+                -100,  # Ignore index for loss
+                dtype=torch.long
+            )
+            for i, label_seq in enumerate(labels):
+                padded_labels[i, :len(label_seq)] = torch.tensor(label_seq)
+
+        return DynamicBatch(
+            input_ids=padded_input,
+            attention_mask=attention_mask,
+            labels=padded_labels,
+            seq_lens=seq_lens
+        )
+\end{lstlisting}
+
+\subsection{Regularization Techniques}
+
+\subsubsection{Attention Dropout Patterns}
+
+Different dropout strategies for attention:
+
+\begin{lstlisting}[language=Python, caption=Advanced Attention Dropout]
+class StructuredAttentionDropout(nn.Module):
+    """Structured dropout for attention matrices"""
+
+    def __init__(
+        self,
+        drop_prob: float,
+        drop_mode: str = "whole_rows"  # "whole_rows", "whole_cols", "blocks"
+    ) -> None:
+        super().__init__()
+        self.drop_prob = drop_prob
+        self.drop_mode = drop_mode
+
+    def forward(
+        self,
+        attention_weights: Tensor,
+        training: bool = True
+    ) -> Tensor:
+        if not training or self.drop_prob == 0:
+            return attention_weights
+
+        batch_size, n_heads, seq_len, seq_len = attention_weights.shape
+
+        if self.drop_mode == "whole_rows":
+            # Drop entire rows (queries)
+            mask = torch.rand(batch_size, n_heads, seq_len, 1) > self.drop_prob
+            mask = mask.float().to(attention_weights.device)
+            return attention_weights * mask / (1 - self.drop_prob)
+
+        elif self.drop_mode == "whole_cols":
+            # Drop entire columns (keys)
+            mask = torch.rand(batch_size, n_heads, 1, seq_len) > self.drop_prob
+            mask = mask.float().to(attention_weights.device)
+            return attention_weights * mask / (1 - self.drop_prob)
+
+        elif self.drop_mode == "blocks":
+            # Drop contiguous blocks
+            block_size = 4
+            n_blocks = seq_len // block_size
+
+            # Create block mask
+            block_mask = torch.rand(
+                batch_size, n_heads, n_blocks, n_blocks
+            ) > self.drop_prob
+
+            # Expand to full size
+            mask = block_mask.repeat_interleave(
+                block_size, dim=2
+            ).repeat_interleave(
+                block_size, dim=3
+            )
+
+            # Handle remainder
+            if seq_len % block_size != 0:
+                full_mask = torch.ones(
+                    batch_size, n_heads, seq_len, seq_len
+                )
+                full_mask[:, :, :mask.shape[2], :mask.shape[3]] = mask
+                mask = full_mask
+
+            mask = mask.float().to(attention_weights.device)
+            return attention_weights * mask / (1 - self.drop_prob)
+
+class AdaptiveDropout(nn.Module):
+    """Dropout rate that adapts during training"""
+
+    def __init__(
+        self,
+        initial_drop: float,
+        final_drop: float,
+        warmup_steps: int,
+        decay_steps: int
+    ) -> None:
+        super().__init__()
+        self.initial_drop = initial_drop
+        self.final_drop = final_drop
+        self.warmup_steps = warmup_steps
+        self.decay_steps = decay_steps
+        self.current_step = 0
+
+    def get_drop_prob(self) -> float:
+        """Calculate current dropout probability"""
+        if self.current_step < self.warmup_steps:
+            # Linear warmup
+            return self.initial_drop * self.current_step / self.warmup_steps
+        elif self.current_step < self.warmup_steps + self.decay_steps:
+            # Linear decay
+            progress = (self.current_step - self.warmup_steps) / self.decay_steps
+            return self.initial_drop + (self.final_drop - self.initial_drop) * progress
+        else:
+            return self.final_drop
+
+    def forward(self, x: Tensor) -> Tensor:
+        drop_prob = self.get_drop_prob()
+        return F.dropout(x, p=drop_prob, training=self.training)
+
+    def step(self) -> None:
+        """Update internal step counter"""
+        self.current_step += 1
+\end{lstlisting}
+
+\subsubsection{Stochastic Depth for Transformers}
+
+Apply stochastic depth (layer dropout) to transformer blocks:
+
+\begin{lstlisting}[language=Python, caption=Stochastic Depth Implementation]
+class StochasticDepthTransformerLayer(nn.Module):
+    """Transformer layer with stochastic depth"""
+
+    def __init__(
+        self,
+        d_model: int,
+        n_heads: int,
+        d_ff: int,
+        drop_path_rate: float = 0.1
+    ) -> None:
+        super().__init__()
+
+        self.attention = nn.MultiheadAttention(
+            d_model, n_heads, batch_first=True
+        )
+        self.ff = nn.Sequential(
+            nn.Linear(d_model, d_ff),
+            nn.GELU(),
+            nn.Linear(d_ff, d_model)
+        )
+
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+
+        self.drop_path_rate = drop_path_rate
+
+    def forward(
+        self,
+        x: Tensor,
+        training: bool = True
+    ) -> Tensor:
+        # Stochastic depth - skip entire layer with probability
+        if training and torch.rand(1).item() < self.drop_path_rate:
+            return x
+
+        # Standard transformer layer
+        attn_out, _ = self.attention(x, x, x)
+        x = x + self._drop_path(attn_out, training)
+        x = self.norm1(x)
+
+        ff_out = self.ff(x)
+        x = x + self._drop_path(ff_out, training)
+        x = self.norm2(x)
+
+        return x
+
+    def _drop_path(
+        self,
+        x: Tensor,
+        training: bool
+    ) -> Tensor:
+        """Apply drop path if not already skipped"""
+        if not training:
+            return x
+
+        # Scale by survival probability
+        return x / (1 - self.drop_path_rate)
+
+class ProgressiveStochasticDepth(nn.Module):
+    """Transformer with progressive stochastic depth"""
+
+    def __init__(
+        self,
+        n_layers: int,
+        d_model: int,
+        n_heads: int,
+        d_ff: int,
+        max_drop_rate: float = 0.3
+    ) -> None:
+        super().__init__()
+
+        # Linearly increase drop rate
+        drop_rates = torch.linspace(0, max_drop_rate, n_layers)
+
+        self.layers = nn.ModuleList([
+            StochasticDepthTransformerLayer(
+                d_model, n_heads, d_ff, drop_rate.item()
+            )
+            for drop_rate in drop_rates
+        ])
+
+    def forward(self, x: Tensor) -> Tensor:
+        for layer in self.layers:
+            x = layer(x, training=self.training)
+        return x
+\end{lstlisting}
+
+%==============================================================================

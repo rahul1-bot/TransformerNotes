@@ -1,0 +1,91 @@
+% Lines 2045-2076 and 5857-5913 from original attention_transformers_notes_ghost.tex
+% Appendix: Common Pitfalls and Solutions
+
+%==============================================================================
+\section{Common Pitfalls and Solutions}
+%==============================================================================
+
+\subsection{Training Issues}
+
+\begin{table}[H]
+\centering
+\caption{Common Training Problems and Solutions}
+\begin{tabular}{l l}
+\toprule
+\textbf{Problem} & \textbf{Solution} \\
+\midrule
+Gradient explosion & Gradient clipping, careful initialization \\
+Training instability & Pre-norm architecture, warmup, smaller learning rate \\
+Overfitting & Dropout, weight decay, data augmentation \\
+Slow convergence & Learning rate scheduling, larger batch size \\
+Memory overflow & Gradient accumulation, model parallelism \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Inference Optimization}
+
+\begin{enumerate}
+    \item \textbf{KV-Cache}: Cache key-value pairs for autoregressive generation
+    \item \textbf{Beam Search Optimization}: Batch beam search computations
+    \item \textbf{Quantization}: INT8 quantization for deployment
+    \item \textbf{Pruning}: Remove less important attention heads
+    \item \textbf{Knowledge Distillation}: Train smaller models from larger ones
+\end{enumerate}
+
+% --- Continuation from line 5857 ---
+
+%==============================================================================
+\section{Common Pitfalls and Solutions}
+
+\subsection{Training Issues}
+
+\textbf{Problem: Gradient Explosion}
+\begin{itemize}
+    \item \textbf{Symptoms:} Loss becomes NaN, weights explode
+    \item \textbf{Solutions:}
+        - Implement gradient clipping: \texttt{torch.nn.utils.clip\_grad\_norm\_}
+        - Use pre-layer normalization
+        - Reduce learning rate
+        - Check for numerical instabilities in attention
+\end{itemize}
+
+\textbf{Problem: Slow Convergence}
+\begin{itemize}
+    \item \textbf{Symptoms:} Loss plateaus early, poor performance
+    \item \textbf{Solutions:}
+        - Implement proper learning rate warmup
+        - Increase model capacity (depth/width)
+        - Check data preprocessing and tokenization
+        - Verify positional encodings are working
+\end{itemize}
+
+\textbf{Problem: Out of Memory}
+\begin{itemize}
+    \item \textbf{Symptoms:} CUDA OOM errors
+    \item \textbf{Solutions:}
+        - Implement gradient accumulation
+        - Use gradient checkpointing
+        - Reduce batch size or sequence length
+        - Consider efficient attention variants
+\end{itemize}
+
+\subsection{Implementation Bugs}
+
+\textbf{Problem: Attention Mask Errors}
+\begin{itemize}
+    \item \textbf{Symptoms:} Model attends to padding or future tokens
+    \item \textbf{Solutions:}
+        - Verify mask dimensions match attention scores
+        - Ensure masks use correct boolean values
+        - Check mask is applied before softmax
+\end{itemize}
+
+\textbf{Problem: Dimension Mismatches}
+\begin{itemize}
+    \item \textbf{Symptoms:} Runtime errors in matrix operations
+    \item \textbf{Solutions:}
+        - Carefully track batch, sequence, and feature dimensions
+        - Use einsum for complex operations
+        - Add shape assertions throughout forward pass
+\end{itemize}

@@ -1,0 +1,61 @@
+% Lines 2157-2215 from original attention_transformers_notes_ghost.tex
+% Chapter 14: Mathematical Derivations
+
+\section{Mathematical Derivations}
+
+\subsection{Gradient Flow in Self-Attention}
+
+Let's derive the gradient flow through the self-attention mechanism to understand why it's more effective than RNNs for long-range dependencies.
+
+Given the attention computation:
+\begin{equation}
+\mathbf{z}_i = \sum_{j=1}^{n} \alpha_{ij} \mathbf{v}_j
+\end{equation}
+
+The gradient with respect to any value vector $\mathbf{v}_k$ is:
+\begin{equation}
+\frac{\partial \mathcal{L}}{\partial \mathbf{v}_k} = \sum_{i=1}^{n} \frac{\partial \mathcal{L}}{\partial \mathbf{z}_i} \cdot \frac{\partial \mathbf{z}_i}{\partial \mathbf{v}_k} = \sum_{i=1}^{n} \frac{\partial \mathcal{L}}{\partial \mathbf{z}_i} \cdot \alpha_{ik}
+\end{equation}
+
+This shows that gradients flow directly from any output position to any input position, weighted by the attention scores. In contrast, RNNs require gradients to flow through all intermediate time steps.
+
+\subsection{Computational Complexity Analysis}
+
+Let's analyze the computational complexity of multi-head attention in detail:
+
+\textbf{Forward Pass:}
+\begin{enumerate}
+    \item QKV projections: $3 \times O(n \cdot d_{model}^2) = O(n \cdot d_{model}^2)$
+    \item Attention scores: $h \times O(n^2 \cdot d_k) = O(n^2 \cdot d_{model})$
+    \item Softmax: $h \times O(n^2) = O(h \cdot n^2)$
+    \item Value aggregation: $h \times O(n^2 \cdot d_v) = O(n^2 \cdot d_{model})$
+    \item Output projection: $O(n \cdot d_{model}^2)$
+\end{enumerate}
+
+Total: $O(n^2 \cdot d_{model} + n \cdot d_{model}^2)$
+
+For typical settings where $n >> d_{model}$, the $O(n^2 \cdot d_{model})$ term dominates.
+
+\subsection{Positional Encoding Properties}
+
+The sinusoidal positional encoding has the property that for any fixed offset $k$:
+
+\begin{equation}
+PE_{pos+k} = f(PE_{pos})
+\end{equation}
+
+where $f$ is a linear transformation. This can be shown using trigonometric identities:
+
+\begin{align}
+\sin((pos + k) \cdot \omega) &= \sin(pos \cdot \omega)\cos(k \cdot \omega) + \cos(pos \cdot \omega)\sin(k \cdot \omega) \\
+\cos((pos + k) \cdot \omega) &= \cos(pos \cdot \omega)\cos(k \cdot \omega) - \sin(pos \cdot \omega)\sin(k \cdot \omega)
+\end{align}
+
+This means the model can learn to attend to relative positions.
+
+%==============================================================================
+% End of Document
+%==============================================================================
+%==============================================================================
+% MASSIVE EXPANSION BEGINS HERE - TARGETING 5000+ LINES
+%==============================================================================

@@ -1,0 +1,75 @@
+% Lines 5728-5802 from original attention_transformers_notes_ghost.tex
+% Appendix: Glossary of Terms
+
+\appendix
+\section{Glossary of Terms}
+
+\begin{description}[leftmargin=!,labelwidth=\widthof{\bfseries Multi-Head Attention}]
+
+\item[Attention Mechanism] A neural network component that allows models to focus on different parts of the input sequence when producing each output element, computing weighted averages based on learned relevance scores.
+
+\item[Attention Weights] The normalized scores $\alpha_{ij} = \text{softmax}(\frac{q_i \cdot k_j}{\sqrt{d_k}})$ that determine how much each value vector contributes to the output at each position.
+
+\item[Autoregressive] A property of models that generate outputs sequentially, where each new token is conditioned on all previously generated tokens.
+
+\item[BERT] Bidirectional Encoder Representations from Transformers - a transformer model that uses masked language modeling for pre-training on unlabeled text.
+
+\item[Causal Masking] A technique that prevents the model from attending to future positions during training, ensuring autoregressive generation capabilities.
+
+\item[Cross-Attention] Attention mechanism where queries come from one sequence (e.g., decoder) while keys and values come from another sequence (e.g., encoder).
+
+\item[Decoder] The component of a transformer that generates output sequences, typically using masked self-attention and cross-attention to encoder outputs.
+
+\item[Embedding] A learned dense vector representation of discrete tokens (words, subwords, or patches) that serves as input to the transformer.
+
+\item[Encoder] The component of a transformer that processes input sequences bidirectionally to create contextual representations.
+
+\item[FFN (Feed-Forward Network)] The position-wise fully connected network applied after attention in each transformer layer, typically with ReLU or GELU activation.
+
+\item[FlashAttention] An IO-aware implementation of exact attention that achieves significant speedups through optimized memory access patterns.
+
+\item[GELU] Gaussian Error Linear Unit - a smooth activation function commonly used in transformers: $\text{GELU}(x) = x \cdot \Phi(x)$.
+
+\item[GPT] Generative Pre-trained Transformer - an autoregressive language model that uses only the decoder stack of the transformer architecture.
+
+\item[Key Matrix] The learned projection $K = XW^K$ that represents the content to be attended to in the attention mechanism.
+
+\item[Layer Normalization] A normalization technique that normalizes inputs across features: $\text{LN}(x) = \gamma \frac{x - \mu}{\sigma} + \beta$.
+
+\item[Linear Attention] A variant that approximates attention with linear complexity $O(n)$ instead of quadratic $O(n^2)$ using kernel methods.
+
+\item[Masked Language Model] A pre-training objective where random tokens are masked and the model must predict them from context.
+
+\item[Multi-Head Attention] Parallel attention mechanisms with different learned projections that capture diverse relationships: $\text{MHA}(Q,K,V) = \text{Concat}(\text{head}_1, ..., \text{head}_h)W^O$.
+
+\item[Positional Encoding] Fixed or learned representations added to embeddings to inject sequence order information, since attention is permutation-invariant.
+
+\item[Pre-Layer Normalization] A variant where layer normalization is applied before the sub-layer rather than after, improving training stability.
+
+\item[Query Matrix] The learned projection $Q = XW^Q$ that represents what information is being sought in the attention mechanism.
+
+\item[Residual Connection] Skip connections that add the input of a sub-layer to its output: $\text{output} = \text{sublayer}(x) + x$.
+
+\item[RoPE] Rotary Position Embedding - a position encoding method that applies rotation matrices to encode relative positions.
+
+\item[Scaled Dot-Product Attention] The fundamental attention operation: $\text{Attention}(Q,K,V) = \text{softmax}(\frac{QK^T}{\sqrt{d_k}})V$.
+
+\item[Self-Attention] Attention mechanism where queries, keys, and values all come from the same sequence, allowing each position to attend to all positions.
+
+\item[Sinusoidal Encoding] Fixed positional encodings using sine and cosine functions of different frequencies.
+
+\item[Sparse Attention] Attention patterns that only compute a subset of all possible attention connections to reduce computational cost.
+
+\item[Teacher Forcing] Training technique where the model receives ground truth tokens as input during training rather than its own predictions.
+
+\item[Token] The basic unit of input/output in transformers, which can be words, subwords, characters, or patches.
+
+\item[Transformer] The architecture introduced in "Attention is All You Need" that relies entirely on attention mechanisms without recurrence or convolution.
+
+\item[Value Matrix] The learned projection $V = XW^V$ that contains the actual information to be aggregated in the attention mechanism.
+
+\item[Vision Transformer (ViT)] Adaptation of transformers for image classification by treating image patches as tokens.
+
+\item[Warmup] Learning rate schedule that gradually increases the learning rate from 0 to target value over initial training steps.
+
+\end{description}
