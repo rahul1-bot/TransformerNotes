@@ -1,0 +1,665 @@
+% Lines 2599-3260 from original attention_transformers_notes_ghost.tex
+% Chapter 11: Advanced Architectural Variants
+
+\section{Advanced Architectural Variants}
+%==============================================================================
+
+\subsection{Efficient Attention Mechanisms}
+
+The quadratic complexity of attention has motivated numerous efficient variants.
+
+\subsubsection{Linear Attention}
+
+Linear attention approximates softmax attention using kernel methods:
+
+\begin{equation}
+\text{LinearAttention}(Q, K, V) = \phi(Q)(\phi(K)^T V)
+\end{equation}
+
+where $\phi$ is a feature map. This reduces complexity from $O(n^2d)$ to $O(nd^2)$.
+
+\begin{lstlisting}[language=Python, caption=Linear Attention Implementation]
+from __future__ import annotations
+from dataclasses import dataclass
+from typing import Protocol, runtime_checkable
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch import Tensor
+
+@dataclass(frozen=True, slots=True)
+class LinearAttentionConfig:
+    d_model: int
+    n_heads: int
+    feature_map: str = "elu"
+    eps: float = 1e-6
+
+@runtime_checkable
+class FeatureMap(Protocol):
+    def __call__(self, x: Tensor) -> Tensor: ...
+
+class ELUFeatureMap:
+    """ELU + 1 feature map for linear attention"""
+
+    def __call__(self, x: Tensor) -> Tensor:
+        return F.elu(x) + 1.0
+
+class LinearMultiHeadAttention(nn.Module):
+    """Linear complexity multi-head attention using kernel trick"""
+
+    def __init__(self, config: LinearAttentionConfig) -> None:
+        super().__init__()
+        self.config = config
+        self.d_k = config.d_model // config.n_heads
+
+        self.w_q = nn.Linear(config.d_model, config.d_model, bias=False)
+        self.w_k = nn.Linear(config.d_model, config.d_model, bias=False)
+        self.w_v = nn.Linear(config.d_model, config.d_model, bias=False)
+        self.w_o = nn.Linear(config.d_model, config.d_model, bias=False)
+
+        self.feature_map = self._get_feature_map(config.feature_map)
+
+    def _get_feature_map(self, name: str) -> FeatureMap:
+        feature_maps = {
+            "elu": ELUFeatureMap(),
+        }
+        return feature_maps[name]
+
+    def forward(
+        self,
+        x: Tensor,
+        mask: Tensor | None = None
+    ) -> Tensor:
+        batch_size, seq_len, _ = x.shape
+
+        # Linear projections
+        q = self.w_q(x).view(batch_size, seq_len, self.config.n_heads, self.d_k)
+        k = self.w_k(x).view(batch_size, seq_len, self.config.n_heads, self.d_k)
+        v = self.w_v(x).view(batch_size, seq_len, self.config.n_heads, self.d_k)
+
+        # Apply feature map
+        q = self.feature_map(q)
+        k = self.feature_map(k)
+
+        # Compute attention in linear time
+        # (B, H, L, D) -> (B, H, D, D)
+        kv = torch.einsum('bhld,bhle->bhde', k, v)
+
+        # (B, H, L, D) x (B, H, D, D) -> (B, H, L, D)
+        out = torch.einsum('bhld,bhde->bhle', q, kv)
+
+        # Normalize
+        k_sum = torch.einsum('bhld->bhl', k).unsqueeze(-1)
+        out = out / (torch.einsum('bhld,bhl->bhld', q, k_sum) + self.config.eps)
+
+        # Reshape and project
+        out = out.transpose(1, 2).contiguous().view(batch_size, seq_len, -1)
+        return self.w_o(out)
+\end{lstlisting}
+
+\subsubsection{Sparse Attention}
+
+Sparse attention restricts attention to specific patterns, reducing computation.
+
+\begin{lstlisting}[language=Python, caption=Sparse Attention Patterns]
+@dataclass(frozen=True, slots=True)
+class SparseAttentionPattern:
+    """Base class for sparse attention patterns"""
+    n_positions: int
+
+class LocalAttentionPattern(SparseAttentionPattern):
+    """Attend only to local window"""
+    window_size: int
+
+    def get_mask(self) -> Tensor:
+        mask = torch.zeros(self.n_positions, self.n_positions)
+        for i in range(self.n_positions):
+            start = max(0, i - self.window_size // 2)
+            end = min(self.n_positions, i + self.window_size // 2 + 1)
+            mask[i, start:end] = 1
+        return mask.bool()
+
+class StridedAttentionPattern(SparseAttentionPattern):
+    """Attend with stride (for hierarchical processing)"""
+    stride: int
+
+    def get_mask(self) -> Tensor:
+        mask = torch.zeros(self.n_positions, self.n_positions)
+        for i in range(self.n_positions):
+            # Local attention
+            mask[i, max(0, i-1):min(self.n_positions, i+2)] = 1
+            # Strided attention
+            for j in range(0, self.n_positions, self.stride):
+                mask[i, j] = 1
+        return mask.bool()
+
+class DilatedAttentionPattern(SparseAttentionPattern):
+    """Dilated attention for increasing receptive field"""
+    dilation_rates: list[int]
+
+    def get_mask(self) -> Tensor:
+        mask = torch.zeros(self.n_positions, self.n_positions)
+        for i in range(self.n_positions):
+            for rate in self.dilation_rates:
+                # Attend to positions at multiples of dilation rate
+                j = i - rate
+                while j >= 0:
+                    mask[i, j] = 1
+                    j -= rate
+                j = i + rate
+                while j < self.n_positions:
+                    mask[i, j] = 1
+                    j += rate
+        return mask.bool()
+\end{lstlisting}
+
+\subsubsection{Flash Attention}
+
+Flash Attention uses tiling and recomputation to achieve memory-efficient exact attention:
+
+\begin{lstlisting}[language=Python, caption=Flash Attention Concept]
+class FlashAttentionConcept:
+    """Conceptual implementation of Flash Attention algorithm"""
+
+    @staticmethod
+    def tiled_attention(
+        q: Tensor,  # (batch, n_heads, seq_len, d_head)
+        k: Tensor,
+        v: Tensor,
+        block_size: int = 64
+    ) -> Tensor:
+        """
+        Compute attention using tiling to reduce memory usage.
+        This is a simplified conceptual version.
+        """
+        batch, n_heads, seq_len, d_head = q.shape
+
+        # Initialize output
+        o = torch.zeros_like(q)
+        l = torch.zeros(batch, n_heads, seq_len, 1, device=q.device)
+
+        # Process in blocks
+        n_blocks = (seq_len + block_size - 1) // block_size
+
+        for i in range(n_blocks):
+            start_i = i * block_size
+            end_i = min((i + 1) * block_size, seq_len)
+
+            # Load Q block
+            q_block = q[:, :, start_i:end_i]
+            o_block = torch.zeros_like(q_block)
+            l_block = torch.zeros(
+                batch, n_heads, end_i - start_i, 1,
+                device=q.device
+            )
+
+            # Iterate over K, V blocks
+            for j in range(n_blocks):
+                start_j = j * block_size
+                end_j = min((j + 1) * block_size, seq_len)
+
+                # Load K, V blocks
+                k_block = k[:, :, start_j:end_j]
+                v_block = v[:, :, start_j:end_j]
+
+                # Compute attention scores for this block
+                scores = torch.matmul(
+                    q_block, k_block.transpose(-2, -1)
+                ) / (d_head ** 0.5)
+
+                # For causal attention, mask future positions
+                if i < j:
+                    scores.fill_(-float('inf'))
+                elif i == j:
+                    mask = torch.triu(
+                        torch.ones(end_i - start_i, end_j - start_j),
+                        diagonal=1
+                    ).bool()
+                    scores.masked_fill_(mask, -float('inf'))
+
+                # Compute attention weights
+                p = F.softmax(scores, dim=-1)
+
+                # Update running statistics
+                l_new = torch.exp(scores).sum(dim=-1, keepdim=True)
+                l_block = l_block + l_new
+
+                # Accumulate weighted values
+                o_block = o_block + torch.matmul(p, v_block)
+
+            # Write back results
+            o[:, :, start_i:end_i] = o_block
+            l[:, :, start_i:end_i] = l_block
+
+        # Final normalization
+        o = o / l
+        return o
+\end{lstlisting}
+
+\subsection{Attention with External Memory}
+
+\subsubsection{Memory-Augmented Transformers}
+
+Adding external memory banks allows transformers to handle longer contexts:
+
+\begin{lstlisting}[language=Python, caption=Memory-Augmented Transformer]
+@dataclass(frozen=True, slots=True)
+class MemoryBankConfig:
+    memory_size: int
+    memory_dim: int
+    n_heads: int
+    update_method: str = "gru"  # "gru", "linear", "none"
+
+class MemoryBank(nn.Module):
+    """External memory bank for transformers"""
+
+    def __init__(self, config: MemoryBankConfig) -> None:
+        super().__init__()
+        self.config = config
+
+        # Initialize memory
+        self.register_buffer(
+            "memory",
+            torch.randn(config.memory_size, config.memory_dim)
+        )
+
+        # Memory update mechanism
+        if config.update_method == "gru":
+            self.update_gate = nn.GRUCell(
+                config.memory_dim,
+                config.memory_dim
+            )
+        elif config.update_method == "linear":
+            self.update_linear = nn.Linear(
+                config.memory_dim * 2,
+                config.memory_dim
+            )
+
+    def query(
+        self,
+        queries: Tensor,  # (batch, seq_len, d_model)
+        values: Tensor | None = None
+    ) -> tuple[Tensor, Tensor]:
+        """Query memory bank and optionally update it"""
+
+        batch_size, seq_len, d_model = queries.shape
+
+        # Expand memory for batch processing
+        memory = self.memory.unsqueeze(0).expand(batch_size, -1, -1)
+
+        # Compute attention to memory
+        scores = torch.matmul(
+            queries, memory.transpose(-2, -1)
+        ) / (self.config.memory_dim ** 0.5)
+
+        attn_weights = F.softmax(scores, dim=-1)
+        memory_output = torch.matmul(attn_weights, memory)
+
+        # Optionally update memory
+        if values is not None and self.config.update_method != "none":
+            self._update_memory(attn_weights, values)
+
+        return memory_output, attn_weights
+
+    def _update_memory(
+        self,
+        attn_weights: Tensor,  # (batch, seq_len, memory_size)
+        values: Tensor  # (batch, seq_len, d_model)
+    ) -> None:
+        """Update memory based on attention patterns"""
+
+        # Aggregate updates across sequence
+        write_weights = attn_weights.mean(dim=1)  # (batch, memory_size)
+        write_values = torch.matmul(
+            write_weights.transpose(-2, -1),
+            values.mean(dim=1)
+        )  # (memory_size, d_model)
+
+        if self.config.update_method == "gru":
+            # GRU-style update
+            self.memory = self.update_gate(
+                write_values,
+                self.memory
+            )
+        elif self.config.update_method == "linear":
+            # Linear interpolation
+            combined = torch.cat([self.memory, write_values], dim=-1)
+            self.memory = self.update_linear(combined)
+
+class MemoryAugmentedTransformerLayer(nn.Module):
+    """Transformer layer with external memory"""
+
+    def __init__(
+        self,
+        d_model: int,
+        n_heads: int,
+        d_ff: int,
+        memory_config: MemoryBankConfig,
+        dropout: float = 0.1
+    ) -> None:
+        super().__init__()
+
+        # Standard transformer components
+        self.self_attn = nn.MultiheadAttention(
+            d_model, n_heads, dropout=dropout, batch_first=True
+        )
+        self.memory_bank = MemoryBank(memory_config)
+        self.cross_attn = nn.MultiheadAttention(
+            d_model, n_heads, dropout=dropout, batch_first=True
+        )
+
+        # Feed-forward network
+        self.ff = nn.Sequential(
+            nn.Linear(d_model, d_ff),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_ff, d_model)
+        )
+
+        # Layer norms
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.norm3 = nn.LayerNorm(d_model)
+
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(
+        self,
+        x: Tensor,
+        update_memory: bool = True
+    ) -> Tensor:
+        # Self-attention
+        attn_out, _ = self.self_attn(x, x, x)
+        x = self.norm1(x + self.dropout(attn_out))
+
+        # Memory attention
+        memory_out, _ = self.memory_bank.query(
+            x,
+            x if update_memory else None
+        )
+        x = self.norm2(x + self.dropout(memory_out))
+
+        # Feed-forward
+        ff_out = self.ff(x)
+        x = self.norm3(x + self.dropout(ff_out))
+
+        return x
+\end{lstlisting}
+
+\subsection{Hierarchical and Recursive Attention}
+
+\subsubsection{Hierarchical Transformers}
+
+Process sequences at multiple scales:
+
+\begin{lstlisting}[language=Python, caption=Hierarchical Transformer Architecture]
+@dataclass(frozen=True, slots=True)
+class HierarchicalConfig:
+    levels: list[int]  # e.g., [4, 16, 64] for 3-level hierarchy
+    d_model: int
+    n_heads: int
+    merge_method: str = "mean"  # "mean", "max", "learned"
+
+class HierarchicalTransformer(nn.Module):
+    """Multi-scale hierarchical transformer"""
+
+    def __init__(self, config: HierarchicalConfig) -> None:
+        super().__init__()
+        self.config = config
+
+        # Transformer for each level
+        self.transformers = nn.ModuleList([
+            nn.TransformerEncoder(
+                nn.TransformerEncoderLayer(
+                    d_model=config.d_model,
+                    nhead=config.n_heads,
+                    batch_first=True
+                ),
+                num_layers=2
+            )
+            for _ in config.levels
+        ])
+
+        # Merging layers between levels
+        if config.merge_method == "learned":
+            self.merge_layers = nn.ModuleList([
+                nn.Linear(config.d_model * 2, config.d_model)
+                for _ in range(len(config.levels) - 1)
+            ])
+
+    def forward(self, x: Tensor) -> list[Tensor]:
+        """Process input hierarchically"""
+
+        batch_size, seq_len, d_model = x.shape
+        outputs = []
+
+        # Process each level
+        current_input = x
+        for level_idx, level_size in enumerate(self.config.levels):
+            # Reshape input for this level
+            if seq_len % level_size != 0:
+                # Pad if necessary
+                pad_len = level_size - (seq_len % level_size)
+                current_input = F.pad(
+                    current_input,
+                    (0, 0, 0, pad_len)
+                )
+
+            # Group sequences
+            grouped = current_input.view(
+                batch_size,
+                -1,
+                level_size,
+                d_model
+            )
+
+            # Apply transformer at this level
+            level_outputs = []
+            for group_idx in range(grouped.shape[1]):
+                group = grouped[:, group_idx]
+                transformed = self.transformers[level_idx](group)
+                level_outputs.append(transformed)
+
+            level_output = torch.stack(level_outputs, dim=1)
+            outputs.append(level_output)
+
+            # Prepare input for next level
+            if level_idx < len(self.config.levels) - 1:
+                current_input = self._merge_groups(
+                    level_output,
+                    level_idx
+                )
+
+        return outputs
+
+    def _merge_groups(
+        self,
+        grouped_output: Tensor,
+        level_idx: int
+    ) -> Tensor:
+        """Merge groups for next hierarchical level"""
+
+        batch_size, n_groups, group_size, d_model = grouped_output.shape
+
+        if self.config.merge_method == "mean":
+            # Average pooling
+            merged = grouped_output.mean(dim=2)
+        elif self.config.merge_method == "max":
+            # Max pooling
+            merged = grouped_output.max(dim=2)[0]
+        elif self.config.merge_method == "learned":
+            # Learned merging with first and last tokens
+            first_last = torch.cat([
+                grouped_output[:, :, 0],
+                grouped_output[:, :, -1]
+            ], dim=-1)
+            merged = self.merge_layers[level_idx](first_last)
+
+        return merged.view(batch_size, -1, d_model)
+\end{lstlisting}
+
+\subsubsection{Tree Transformers}
+
+Process tree-structured data with attention:
+
+\begin{lstlisting}[language=Python, caption=Tree Transformer Implementation]
+@dataclass(frozen=True)
+class TreeNode:
+    """Node in a tree structure"""
+    value: Tensor
+    children: list[TreeNode]
+    parent: TreeNode | None = None
+
+class TreeTransformer(nn.Module):
+    """Transformer for tree-structured data"""
+
+    def __init__(
+        self,
+        d_model: int,
+        n_heads: int,
+        n_layers: int,
+        max_depth: int
+    ) -> None:
+        super().__init__()
+
+        self.d_model = d_model
+        self.n_heads = n_heads
+        self.max_depth = max_depth
+
+        # Positional encoding for tree depth
+        self.depth_embedding = nn.Embedding(max_depth, d_model)
+
+        # Transformer layers
+        self.layers = nn.ModuleList([
+            TreeTransformerLayer(d_model, n_heads)
+            for _ in range(n_layers)
+        ])
+
+    def forward(self, tree: TreeNode) -> TreeNode:
+        """Process tree with transformer"""
+
+        # Convert tree to tensor representation
+        nodes, edges, depths = self._tree_to_tensors(tree)
+
+        # Add depth embeddings
+        depth_emb = self.depth_embedding(depths)
+        nodes = nodes + depth_emb
+
+        # Apply transformer layers
+        for layer in self.layers:
+            nodes = layer(nodes, edges)
+
+        # Convert back to tree
+        output_tree = self._tensors_to_tree(nodes, tree)
+        return output_tree
+
+    def _tree_to_tensors(
+        self,
+        tree: TreeNode
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        """Convert tree to tensor representation"""
+
+        nodes = []
+        edges = []
+        depths = []
+
+        def traverse(node: TreeNode, depth: int = 0) -> int:
+            node_idx = len(nodes)
+            nodes.append(node.value)
+            depths.append(depth)
+
+            for child in node.children:
+                child_idx = traverse(child, depth + 1)
+                edges.append((node_idx, child_idx))
+                edges.append((child_idx, node_idx))  # Bidirectional
+
+            return node_idx
+
+        traverse(tree)
+
+        # Convert to tensors
+        nodes_tensor = torch.stack(nodes)
+        depths_tensor = torch.tensor(depths, dtype=torch.long)
+
+        # Create adjacency matrix
+        n_nodes = len(nodes)
+        adj_matrix = torch.zeros(n_nodes, n_nodes)
+        for i, j in edges:
+            adj_matrix[i, j] = 1
+
+        return nodes_tensor, adj_matrix, depths_tensor
+
+    def _tensors_to_tree(
+        self,
+        nodes: Tensor,
+        original_tree: TreeNode
+    ) -> TreeNode:
+        """Convert tensor representation back to tree"""
+
+        idx = 0
+
+        def rebuild(original_node: TreeNode) -> TreeNode:
+            nonlocal idx
+            new_node = TreeNode(
+                value=nodes[idx],
+                children=[],
+                parent=None
+            )
+            idx += 1
+
+            for child in original_node.children:
+                new_child = rebuild(child)
+                new_child.parent = new_node
+                new_node.children.append(new_child)
+
+            return new_node
+
+        return rebuild(original_tree)
+
+class TreeTransformerLayer(nn.Module):
+    """Single layer of tree transformer"""
+
+    def __init__(self, d_model: int, n_heads: int) -> None:
+        super().__init__()
+
+        self.self_attn = nn.MultiheadAttention(
+            d_model,
+            n_heads,
+            batch_first=True
+        )
+        self.ff = nn.Sequential(
+            nn.Linear(d_model, d_model * 4),
+            nn.ReLU(),
+            nn.Linear(d_model * 4, d_model)
+        )
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+
+    def forward(
+        self,
+        nodes: Tensor,
+        adj_matrix: Tensor
+    ) -> Tensor:
+        """Apply tree-aware attention"""
+
+        # Create attention mask from adjacency matrix
+        # Allow attention only between connected nodes
+        mask = (adj_matrix == 0).float() * -1e9
+
+        # Self-attention with tree structure
+        attn_out, _ = self.self_attn(
+            nodes.unsqueeze(0),
+            nodes.unsqueeze(0),
+            nodes.unsqueeze(0),
+            attn_mask=mask.unsqueeze(0)
+        )
+        nodes = self.norm1(nodes + attn_out.squeeze(0))
+
+        # Feed-forward
+        ff_out = self.ff(nodes)
+        nodes = self.norm2(nodes + ff_out)
+
+        return nodes
+\end{lstlisting}
+
+%==============================================================================

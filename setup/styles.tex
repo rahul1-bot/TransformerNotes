@@ -1,0 +1,74 @@
+% Lines 50-120 from original attention_transformers_notes_ghost.tex
+% Custom environments and style definitions
+
+% Notation box configuration
+\newtcolorbox{notationbox}{
+    colback=notationbox,
+    colframe=notationborder,
+    boxrule=0.5pt,
+    arc=2mm,
+    left=5pt,
+    right=5pt,
+    top=5pt,
+    bottom=5pt,
+    fonttitle=\bfseries,
+    title=Notation:
+}
+
+% Code listing configuration for Python
+\lstset{
+    language=Python,
+    basicstyle=\ttfamily\small,
+    keywordstyle=\color{blue}\bfseries,
+    stringstyle=\color{red},
+    commentstyle=\color{gray}\itshape,
+    showstringspaces=false,
+    numberstyle=\tiny\color{gray},
+    numbers=left,
+    stepnumber=1,
+    numbersep=5pt,
+    backgroundcolor=\color{gray!10},
+    frame=single,
+    frameround=tttt,
+    framerule=0.5pt,
+    rulecolor=\color{gray!50},
+    tabsize=4,
+    captionpos=b,
+    breaklines=true,
+    breakatwhitespace=true,
+    escapeinside={(*@}{@*)},
+    morekeywords={from,import,class,def,return,if,else,elif,
+                  for,while,try,except,as,self,None,True,False,
+                  and,or,not,in,is,lambda,with,yield,raise,pass,
+                  continue,break,global,nonlocal,assert,async,
+                  await,del,finally,Protocol,dataclass,frozen,slots,
+                  torch,nn,tensor,Tensor,Module,Linear,Dropout,
+                  LayerNorm,Sequential,ModuleList,Parameter}
+}
+
+% TikZ styles for diagrams
+\tikzstyle{box} = [rectangle, draw, rounded corners,
+                   minimum width=3cm, minimum height=1cm,
+                   text centered, fill=blue!10,
+                   drop shadow]
+
+\tikzstyle{encoder} = [rectangle, draw, rounded corners,
+                       minimum width=3cm, minimum height=1.5cm,
+                       text centered, fill=nodegreen,
+                       drop shadow]
+
+\tikzstyle{decoder} = [rectangle, draw, rounded corners,
+                       minimum width=3cm, minimum height=1.5cm,
+                       text centered, fill=nodeblue,
+                       drop shadow]
+
+\tikzstyle{attention} = [rectangle, draw, rounded corners,
+                         minimum width=2.5cm, minimum height=0.8cm,
+                         text centered, fill=nodeyellow]
+
+\tikzstyle{embedding} = [rectangle, draw,
+                         minimum width=1.5cm, minimum height=0.6cm,
+                         text centered, fill=gray!20]
+
+\tikzstyle{arrow} = [->, thick, >=stealth]
+\tikzstyle{doublearrow} = [<->, thick, >=stealth]

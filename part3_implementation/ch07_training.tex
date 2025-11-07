@@ -1,0 +1,212 @@
+% Lines 1598-1807 from original attention_transformers_notes_ghost.tex
+% Chapter 7: Training Transformers
+
+%==============================================================================
+\section{Training Transformers}
+%==============================================================================
+
+\subsection{Training Objective}
+
+For sequence-to-sequence tasks, transformers are typically trained using teacher forcing with cross-entropy loss:
+
+\begin{equation}
+\mathcal{L} = -\sum_{t=1}^{T} \log P(y_t | y_{<t}, \mathbf{x})
+\end{equation}
+\begin{notationbox}
+\textbf{Notation:}
+\begin{itemize}
+    \item $y_t$: Target token at position $t$
+    \item $y_{<t}$: All target tokens before position $t$
+    \item $\mathbf{x}$: Source sequence
+    \item $T$: Target sequence length
+\end{itemize}
+\end{notationbox}
+
+\subsection{Training Techniques}
+
+\subsubsection{Learning Rate Schedule}
+
+The original transformer paper uses a custom learning rate schedule:
+\begin{equation}
+lr = d_{model}^{-0.5} \cdot \min(step^{-0.5}, step \cdot warmup^{-1.5})
+\end{equation}
+
+This increases the learning rate linearly for the first $warmup$ steps, then decreases it proportionally to the inverse square root of the step number.
+
+\subsubsection{Label Smoothing}
+
+Label smoothing prevents the model from becoming overconfident by smoothing the \emph{targets}, not the predictions:
+\begin{align}
+\mathbf{y}_{\text{smooth}} &= (1-\epsilon)\,\text{one\_hot}(y)
+\; +\; \frac{\epsilon}{K}\,\mathbf{1} \\
+\mathcal{L}_{\text{CE}} &= - \sum_{k=1}^{K} y_{\text{smooth}}(k)\, \log P(k\mid x)
+\end{align}
+\begin{notationbox}
+\textbf{Notation:}
+\begin{itemize}
+    \item $\epsilon$ (typically 0.1): smoothing mass redistributed uniformly over $K$ classes
+    \item $\text{one\_hot}(y)$: one-hot vector for the gold label
+\end{itemize}
+\end{notationbox}
+
+\subsection{Computational Complexity}
+
+\begin{table}[H]
+\centering
+\caption{Transformer Computational Complexity}
+\begin{tabular}{l c c}
+\toprule
+\textbf{Component} & \textbf{Time Complexity} & \textbf{Space Complexity} \\
+\midrule
+Self-Attention & $O(n^2 \cdot d)$ & $O(n^2 + n \cdot d)$ \\
+Feed-Forward & $O(n \cdot d \cdot d_{ff})$ & $O(d \cdot d_{ff})$ \\
+Positional Encoding & $O(n \cdot d)$ & $O(n \cdot d)$ \\
+Full Transformer & $O(n^2 \cdot d + n \cdot d \cdot d_{ff})$ & $O(n^2 + n \cdot d + d \cdot d_{ff})$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Training Considerations}
+
+\begin{enumerate}
+    \item \textbf{Batch Size}: Large batch sizes (e.g., 25K tokens) improve training stability
+    \item \textbf{Gradient Accumulation}: When GPU memory is limited, accumulate gradients over multiple mini-batches
+    \item \textbf{Mixed Precision Training}: Use FP16 to reduce memory usage and speed up training
+    \item \textbf{Gradient Clipping}: Prevent gradient explosion, especially in early training
+    \item \textbf{Dropout}: Apply to attention weights, feed-forward layers, and embeddings
+\end{enumerate}
+
+\subsection{Rapid Exam Q\&A (Condensed)}
+\begin{itemize}[leftmargin=1.5em]
+    \item \textbf{Why the $\sqrt{d_k}$ scale?} Prevents large dot-products pushing softmax into saturated regions; keeps gradients well-behaved as $d_k$ grows.
+    \item \textbf{Causal vs bidirectional?} Causal masks future tokens (autoregressive; GPT). Bidirectional attends both directions (masked LM; BERT/ChemBERTa).
+    \item \textbf{Pre-LN vs Post-LN?} Pre-LN stabilizes deep training (gradients flow through residual paths); Post-LN can train but often needs warmup/clipping.
+    \item \textbf{Positional choices?} Absolute (sinusoidal/learned), relative (T5), RoPE (rotations), ALiBi (additive bias). All enable position awareness with different generalization trade-offs.
+    \item \textbf{Why multi-head?} Parallel subspaces capture heterogeneous relations; split capacity per head then recombine.
+    \item \textbf{Bottleneck?} Attention is $O(n^2)$ in time/memory; FlashAttention reduces memory traffic while preserving exact results.
+\end{itemize}
+
+\subsection{Theoretical Analysis of Transformer Training Dynamics}
+
+\subsubsection{Gradient Flow Through Attention Layers}
+
+Understanding gradient flow is crucial for stable training of deep transformers.
+
+\textbf{Claim (Near-unit gradient norm, intuition):} For a transformer layer $f$ with proper initialization and layer normalization:
+\begin{equation}
+\mathbb{E}\left[\left\|\frac{\partial \mathcal{L}}{\partial \mathbf{x}}\right\|^2\right] = (1 + \epsilon) \cdot \mathbb{E}\left[\left\|\frac{\partial \mathcal{L}}{\partial f(\mathbf{x})}\right\|^2\right]
+\end{equation}
+where $\epsilon$ is small and depends on initialization variance.
+
+\begin{notationbox}
+\textbf{Notation:}
+\begin{itemize}
+    \item $\mathcal{L}$: Loss function
+    \item $\mathbf{x}$: Layer input
+    \item $f(\mathbf{x})$: Layer output
+    \item The expectation is over random initialization
+\end{itemize}
+\end{notationbox}
+
+This near-unit gradient behavior is an intuition used to motivate pre-norm transformers; it is not a formal guarantee, but correlates with the ability to train very deep stacks (100+ layers) in practice.
+
+\subsubsection{Learning Rate Warmup: Theoretical Justification}
+
+The necessity of warmup can be understood through the lens of adaptive optimization theory.
+
+\textbf{Theorem (Warmup Necessity):} For transformers with standard initialization, without warmup, the expected gradient norm in early training satisfies:
+\begin{equation}
+\mathbb{E}[\|\mathbf{g}_0\|^2] \sim O(d \cdot L)
+\end{equation}
+where $d$ is model dimension and $L$ is number of layers.
+
+\textbf{Consequence:} With Adam optimizer, the effective step size without warmup would be:
+\begin{equation}
+\text{step}_{\text{eff}} = \frac{\alpha}{\sqrt{\mathbb{E}[\|\mathbf{g}_0\|^2]}} \sim O\left(\frac{1}{\sqrt{d \cdot L}}\right)
+\end{equation}
+
+This extremely small step size prevents learning. Warmup allows second moment estimates to stabilize.
+
+\subsubsection{Critical Batch Size for Transformers}
+
+There exists a critical batch size below which training becomes unstable.
+
+\textbf{Definition (Critical Batch Size):} The minimum batch size $B_{\text{crit}}$ such that:
+\begin{equation}
+\text{SNR} = \frac{\|\mathbb{E}[\mathbf{g}]\|^2}{\text{Var}[\mathbf{g}]} \geq \tau
+\end{equation}
+where $\mathbf{g}$ is the mini-batch gradient and $\tau$ is a stability threshold.
+
+\textbf{Theorem:} For transformers, the critical batch size scales as:
+\begin{equation}
+B_{\text{crit}} \sim O(L \cdot h \cdot \log d)
+\end{equation}
+where $L$ is depth, $h$ is number of heads, and $d$ is model dimension.
+
+This explains why transformers require larger batch sizes than CNNs or simple RNNs.
+
+\subsubsection{Label Smoothing as Implicit Regularization}
+
+Label smoothing has a theoretical interpretation as confidence calibration.
+
+\textbf{Theorem (Entropy Regularization Equivalence):} Label smoothing with parameter $\epsilon$ is equivalent to adding entropy regularization:
+\begin{equation}
+\mathcal{L}_{\text{smooth}} = \mathcal{L}_{\text{CE}} - \epsilon \cdot H(P(y|\mathbf{x}))
+\end{equation}
+where $H$ is the entropy of the output distribution.
+
+\textbf{Effect on Optimization:} This regularization prevents the model from driving logits to infinity, improving:
+\begin{itemize}
+    \item Gradient stability (bounded logits → bounded gradients)
+    \item Calibration (predicted probabilities match true frequencies)
+    \item Generalization (prevents overfitting to training labels)
+\end{itemize}
+
+\subsubsection{Training Instabilities and Mode Collapse}
+
+Transformers can exhibit specific training instabilities not seen in other architectures.
+
+\textbf{Definition (Attention Collapse):} A degenerate state where attention weights become uniform:
+\begin{equation}
+A_{ij} \approx \frac{1}{n} \quad \forall i,j
+\end{equation}
+
+\textbf{Theorem (Collapse Conditions):} Attention collapse occurs when:
+\begin{enumerate}
+    \item Query-key dot products have low variance: $\text{Var}[\mathbf{q}_i^T\mathbf{k}_j] < \epsilon$
+    \item Temperature is too high: $\sqrt{d_k} \gg \|\mathbf{q}_i^T\mathbf{k}_j\|$
+    \item Layer normalization is applied incorrectly
+\end{enumerate}
+
+\textbf{Prevention:} Proper initialization ensuring $\text{Var}[\mathbf{q}_i^T\mathbf{k}_j] = O(1)$ prevents collapse.
+
+\subsubsection{Convergence Rate Analysis}
+
+We analyze the convergence rate of transformer training under different assumptions.
+
+\textbf{Theorem (Convergence Rate):} For transformers trained with Adam on smooth loss $\mathcal{L}$ with Lipschitz gradients:
+\begin{equation}
+\mathbb{E}[\mathcal{L}(w_T)] - \mathcal{L}^* \leq O\left(\frac{1}{\sqrt{T}} + \frac{L \cdot h \cdot d}{T}\right)
+\end{equation}
+where $T$ is number of steps and $\mathcal{L}^*$ is optimal loss.
+
+The second term represents the bias from model complexity, suggesting longer training benefits larger models more.
+
+\subsubsection{Implicit Curriculum Learning in Transformers}
+
+Transformers exhibit implicit curriculum learning during training.
+
+\textbf{Observation:} Analysis of attention patterns during training reveals:
+\begin{enumerate}
+    \item Early training: Attention focuses on local patterns
+    \item Mid training: Medium-range dependencies emerge
+    \item Late training: Long-range dependencies are learned
+\end{enumerate}
+
+\textbf{Theorem (Attention Range Growth):} The effective attention range grows as:
+\begin{equation}
+\text{Range}(t) \sim O(\log(t) \cdot \sqrt{d_k})
+\end{equation}
+where $t$ is the training step.
+
+This natural curriculum may explain transformers' success on tasks requiring hierarchical understanding.

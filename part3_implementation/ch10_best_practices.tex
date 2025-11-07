@@ -1,0 +1,85 @@
+% Lines 1962-2044 from original attention_transformers_notes_ghost.tex
+% Chapter 10: Implementation Best Practices
+
+%==============================================================================
+\section{Implementation Best Practices}
+%==============================================================================
+
+\subsection{Numerical Stability}
+
+\begin{enumerate}
+    \item \textbf{Attention Score Scaling}: Always scale by $\sqrt{d_k}$ to prevent softmax saturation
+    \item \textbf{Layer Normalization}: Apply before sub-layers (pre-norm) for better stability
+    \item \textbf{Gradient Clipping}: Essential for stable training
+    \item \textbf{Initialize Carefully}: Use Xavier/He initialization appropriately
+\end{enumerate}
+
+\subsection{Memory Optimization}
+
+\begin{enumerate}
+    \item \textbf{Gradient Checkpointing}: Trade computation for memory
+    \item \textbf{Attention Caching}: Cache key-value pairs during inference
+    \item \textbf{Mixed Precision}: Use FP16/BF16 where possible
+    \item \textbf{Sequence Packing}: Pack multiple sequences in a batch efficiently
+\end{enumerate}
+
+\subsection{Performance Tips}
+
+\begin{lstlisting}[language=Python, caption=Optimized Attention Implementation]
+class OptimizedAttention(nn.Module):
+    def __init__(self, config: AttentionConfig) -> None:
+        super().__init__()
+        self._config: AttentionConfig = config
+
+        # Fused QKV projection for efficiency
+        self._qkv_proj: nn.Linear = nn.Linear(
+            config.d_model, 3 * config.d_model, bias=False
+        )
+        self._output_proj: nn.Linear = nn.Linear(
+            config.d_model, config.d_model
+        )
+
+        self._dropout: nn.Dropout = nn.Dropout(config.dropout)
+        self._scale: float = math.sqrt(config.d_k)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+        use_cache: bool = False
+    ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
+        batch_size, seq_len, _ = x.shape
+
+        # Efficient QKV computation
+        qkv: torch.Tensor = self._qkv_proj(x)
+        qkv = qkv.reshape(
+            batch_size, seq_len, 3, self._config.n_heads, self._config.d_k
+        )
+        qkv = qkv.permute(2, 0, 3, 1, 4)
+        q, k, v = qkv[0], qkv[1], qkv[2]
+
+        # Flash Attention (if available)
+        if hasattr(F, 'scaled_dot_product_attention'):
+            attn_output = F.scaled_dot_product_attention(
+                q, k, v,
+                attn_mask=mask,
+                dropout_p=self._config.dropout if self.training else 0.0
+            )
+        else:
+            # Standard attention computation
+            scores = torch.matmul(q, k.transpose(-2, -1)) / self._scale
+            if mask is not None:
+                scores.masked_fill_(mask == 0, -1e9)
+
+            attn_weights = F.softmax(scores, dim=-1)
+            attn_weights = self._dropout(attn_weights)
+            attn_output = torch.matmul(attn_weights, v)
+
+        # Reshape and project output
+        attn_output = attn_output.transpose(1, 2).contiguous()
+        attn_output = attn_output.view(batch_size, seq_len, -1)
+        output = self._output_proj(attn_output)
+
+        cache = (k, v) if use_cache else None
+        return output, cache
+\end{lstlisting}

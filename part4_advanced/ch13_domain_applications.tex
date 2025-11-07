@@ -1,0 +1,590 @@
+% Lines 3813-4399 from original attention_transformers_notes_ghost.tex
+% Chapter 13: Domain-Specific Applications
+
+\section{Domain-Specific Applications}
+%==============================================================================
+
+\subsection{Transformers for Computer Vision}
+
+\subsubsection{Vision Transformer (ViT) Implementation}
+
+Complete implementation of Vision Transformer:
+
+\begin{lstlisting}[language=Python, caption=Vision Transformer Implementation]
+@dataclass(frozen=True, slots=True)
+class ViTConfig:
+    image_size: int = 224
+    patch_size: int = 16
+    num_channels: int = 3
+    num_classes: int = 1000
+    d_model: int = 768
+    n_heads: int = 12
+    n_layers: int = 12
+    d_ff: int = 3072
+    dropout: float = 0.1
+    attention_dropout: float = 0.0
+
+class PatchEmbedding(nn.Module):
+    """Convert image into sequence of patch embeddings"""
+
+    def __init__(self, config: ViTConfig) -> None:
+        super().__init__()
+        self.config = config
+        self.num_patches = (config.image_size // config.patch_size) ** 2
+
+        # Linear projection of flattened patches
+        self.projection = nn.Linear(
+            config.num_channels * config.patch_size ** 2,
+            config.d_model
+        )
+
+    def forward(self, x: Tensor) -> Tensor:
+        # x shape: (batch, channels, height, width)
+        batch_size = x.shape[0]
+
+        # Create patches
+        # (batch, channels, h, w) -> (batch, num_patches, patch_dim)
+        patches = x.unfold(2, self.config.patch_size, self.config.patch_size) \
+                   .unfold(3, self.config.patch_size, self.config.patch_size) \
+                   .contiguous()
+
+        patches = patches.view(
+            batch_size,
+            self.config.num_channels,
+            self.num_patches,
+            self.config.patch_size ** 2
+        )
+        patches = patches.permute(0, 2, 1, 3).contiguous()
+        patches = patches.view(
+            batch_size,
+            self.num_patches,
+            -1
+        )
+
+        # Project patches
+        embeddings = self.projection(patches)
+        return embeddings
+
+class VisionTransformer(nn.Module):
+    """Vision Transformer for image classification"""
+
+    def __init__(self, config: ViTConfig) -> None:
+        super().__init__()
+        self.config = config
+
+        # Patch embedding
+        self.patch_embed = PatchEmbedding(config)
+        num_patches = self.patch_embed.num_patches
+
+        # Class token
+        self.cls_token = nn.Parameter(
+            torch.zeros(1, 1, config.d_model)
+        )
+
+        # Position embeddings
+        self.pos_embed = nn.Parameter(
+            torch.zeros(1, num_patches + 1, config.d_model)
+        )
+
+        # Dropout
+        self.pos_drop = nn.Dropout(config.dropout)
+
+        # Transformer encoder
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=config.d_model,
+            nhead=config.n_heads,
+            dim_feedforward=config.d_ff,
+            dropout=config.dropout,
+            activation='gelu',
+            batch_first=True
+        )
+        self.encoder = nn.TransformerEncoder(
+            encoder_layer,
+            num_layers=config.n_layers
+        )
+
+        # Classification head
+        self.norm = nn.LayerNorm(config.d_model)
+        self.head = nn.Linear(config.d_model, config.num_classes)
+
+        # Initialize weights
+        self._init_weights()
+
+    def _init_weights(self) -> None:
+        # Initialize patch embeddings
+        nn.init.xavier_uniform_(self.patch_embed.projection.weight)
+        nn.init.normal_(self.patch_embed.projection.bias, std=1e-6)
+
+        # Initialize positional embeddings
+        nn.init.normal_(self.pos_embed, std=0.02)
+        nn.init.normal_(self.cls_token, std=0.02)
+
+        # Initialize classification head
+        nn.init.zeros_(self.head.bias)
+        nn.init.xavier_uniform_(self.head.weight)
+
+    def forward(self, x: Tensor) -> Tensor:
+        batch_size = x.shape[0]
+
+        # Patch embedding
+        x = self.patch_embed(x)
+
+        # Add class token
+        cls_tokens = self.cls_token.expand(batch_size, -1, -1)
+        x = torch.cat([cls_tokens, x], dim=1)
+
+        # Add position embeddings
+        x = x + self.pos_embed
+        x = self.pos_drop(x)
+
+        # Transformer encoder
+        x = self.encoder(x)
+
+        # Classification head uses only class token
+        x = self.norm(x[:, 0])
+        x = self.head(x)
+
+        return x
+
+    def get_attention_maps(
+        self,
+        x: Tensor
+    ) -> list[Tensor]:
+        """Extract attention maps for visualization"""
+
+        batch_size = x.shape[0]
+
+        # Patch embedding
+        x = self.patch_embed(x)
+
+        # Add class token
+        cls_tokens = self.cls_token.expand(batch_size, -1, -1)
+        x = torch.cat([cls_tokens, x], dim=1)
+
+        # Add position embeddings
+        x = x + self.pos_embed
+
+        attention_maps = []
+
+        # Extract attention from each layer
+        for layer in self.encoder.layers:
+            # Get attention weights
+            with torch.no_grad():
+                _, attn_weights = layer.self_attn(
+                    x, x, x,
+                    need_weights=True,
+                    average_attn_weights=False
+                )
+            attention_maps.append(attn_weights)
+
+            # Forward through layer
+            x = layer(x)
+
+        return attention_maps
+\end{lstlisting}
+
+\subsubsection{Hybrid CNN-Transformer Architectures}
+
+Combine convolutional layers with transformers:
+
+\begin{lstlisting}[language=Python, caption=Hybrid CNN-Transformer]
+class ConvStem(nn.Module):
+    """Convolutional stem for hybrid architectures"""
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        patch_size: int
+    ) -> None:
+        super().__init__()
+
+        # Progressive downsampling with conv layers
+        self.layers = nn.Sequential(
+            # Initial conv
+            nn.Conv2d(in_channels, out_channels // 4, 3, 2, 1),
+            nn.BatchNorm2d(out_channels // 4),
+            nn.ReLU(inplace=True),
+
+            # Second conv
+            nn.Conv2d(out_channels // 4, out_channels // 2, 3, 2, 1),
+            nn.BatchNorm2d(out_channels // 2),
+            nn.ReLU(inplace=True),
+
+            # Final conv
+            nn.Conv2d(out_channels // 2, out_channels, 3, 2, 1),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+
+            # Adjust to patch size
+            nn.Conv2d(out_channels, out_channels, patch_size // 8, patch_size // 8),
+        )
+
+    def forward(self, x: Tensor) -> Tensor:
+        x = self.layers(x)
+        # Flatten spatial dimensions
+        batch_size, channels, h, w = x.shape
+        x = x.view(batch_size, channels, h * w).transpose(1, 2)
+        return x
+
+class HybridVisionTransformer(nn.Module):
+    """Vision Transformer with CNN stem"""
+
+    def __init__(
+        self,
+        config: ViTConfig,
+        use_conv_stem: bool = True
+    ) -> None:
+        super().__init__()
+        self.config = config
+
+        if use_conv_stem:
+            self.patch_embed = ConvStem(
+                config.num_channels,
+                config.d_model,
+                config.patch_size
+            )
+            # Calculate number of patches after conv stem
+            self.num_patches = (config.image_size // config.patch_size) ** 2
+        else:
+            self.patch_embed = PatchEmbedding(config)
+            self.num_patches = self.patch_embed.num_patches
+
+        # Rest is similar to standard ViT
+        self.cls_token = nn.Parameter(
+            torch.zeros(1, 1, config.d_model)
+        )
+        self.pos_embed = nn.Parameter(
+            torch.zeros(1, self.num_patches + 1, config.d_model)
+        )
+
+        # Transformer encoder
+        self.encoder = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(
+                d_model=config.d_model,
+                nhead=config.n_heads,
+                dim_feedforward=config.d_ff,
+                dropout=config.dropout,
+                activation='gelu',
+                batch_first=True
+            ),
+            num_layers=config.n_layers
+        )
+
+        self.norm = nn.LayerNorm(config.d_model)
+        self.head = nn.Linear(config.d_model, config.num_classes)
+
+    def forward(self, x: Tensor) -> Tensor:
+        batch_size = x.shape[0]
+
+        # Patch embedding (CNN or linear)
+        x = self.patch_embed(x)
+
+        # Add class token
+        cls_tokens = self.cls_token.expand(batch_size, -1, -1)
+        x = torch.cat([cls_tokens, x], dim=1)
+
+        # Add position embeddings
+        x = x + self.pos_embed
+
+        # Transformer encoder
+        x = self.encoder(x)
+
+        # Classification head
+        x = self.norm(x[:, 0])
+        x = self.head(x)
+
+        return x
+\end{lstlisting}
+
+\subsection{Transformers for Time Series}
+
+\subsubsection{Time Series Transformer}
+
+Adapt transformers for time series forecasting:
+
+\begin{lstlisting}[language=Python, caption=Time Series Transformer]
+@dataclass(frozen=True, slots=True)
+class TimeSeriesConfig:
+    seq_len: int  # Input sequence length
+    pred_len: int  # Prediction length
+    d_input: int  # Number of input features
+    d_model: int = 512
+    n_heads: int = 8
+    n_layers: int = 6
+    d_ff: int = 2048
+    dropout: float = 0.1
+
+class TimeEmbedding(nn.Module):
+    """Embed time features for time series"""
+
+    def __init__(self, d_model: int) -> None:
+        super().__init__()
+
+        # Embeddings for different time scales
+        self.minute_embed = nn.Embedding(60, d_model)
+        self.hour_embed = nn.Embedding(24, d_model)
+        self.day_embed = nn.Embedding(32, d_model)
+        self.month_embed = nn.Embedding(13, d_model)
+        self.weekday_embed = nn.Embedding(7, d_model)
+
+    def forward(self, timestamps: Tensor) -> Tensor:
+        # timestamps shape: (batch, seq_len, 5)
+        # Contains: [minute, hour, day, month, weekday]
+
+        minute_emb = self.minute_embed(timestamps[..., 0].long())
+        hour_emb = self.hour_embed(timestamps[..., 1].long())
+        day_emb = self.day_embed(timestamps[..., 2].long())
+        month_emb = self.month_embed(timestamps[..., 3].long())
+        weekday_emb = self.weekday_embed(timestamps[..., 4].long())
+
+        # Combine embeddings
+        time_emb = minute_emb + hour_emb + day_emb + month_emb + weekday_emb
+        return time_emb
+
+class TimeSeriesTransformer(nn.Module):
+    """Transformer for time series forecasting"""
+
+    def __init__(self, config: TimeSeriesConfig) -> None:
+        super().__init__()
+        self.config = config
+
+        # Input projection
+        self.input_projection = nn.Linear(config.d_input, config.d_model)
+
+        # Time embeddings
+        self.time_embed = TimeEmbedding(config.d_model)
+
+        # Positional encoding
+        self.pos_encoding = nn.Parameter(
+            torch.zeros(1, config.seq_len + config.pred_len, config.d_model)
+        )
+
+        # Transformer encoder for input sequence
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=config.d_model,
+            nhead=config.n_heads,
+            dim_feedforward=config.d_ff,
+            dropout=config.dropout,
+            batch_first=True
+        )
+        self.encoder = nn.TransformerEncoder(
+            encoder_layer,
+            num_layers=config.n_layers
+        )
+
+        # Transformer decoder for predictions
+        decoder_layer = nn.TransformerDecoderLayer(
+            d_model=config.d_model,
+            nhead=config.n_heads,
+            dim_feedforward=config.d_ff,
+            dropout=config.dropout,
+            batch_first=True
+        )
+        self.decoder = nn.TransformerDecoder(
+            decoder_layer,
+            num_layers=config.n_layers
+        )
+
+        # Output projection
+        self.output_projection = nn.Linear(config.d_model, config.d_input)
+
+        # Learnable start token for decoder
+        self.start_token = nn.Parameter(
+            torch.zeros(1, 1, config.d_model)
+        )
+
+    def forward(
+        self,
+        x: Tensor,  # (batch, seq_len, d_input)
+        timestamps: Tensor,  # (batch, seq_len + pred_len, 5)
+        future_timestamps: Tensor | None = None
+    ) -> Tensor:
+        batch_size = x.shape[0]
+
+        # Project input
+        x = self.input_projection(x)
+
+        # Add time embeddings for input
+        input_time_emb = self.time_embed(timestamps[:, :self.config.seq_len])
+        x = x + input_time_emb
+
+        # Add positional encoding
+        x = x + self.pos_encoding[:, :self.config.seq_len]
+
+        # Encode input sequence
+        memory = self.encoder(x)
+
+        # Prepare decoder input
+        if self.training:
+            # During training, use teacher forcing
+            # Shift target sequence and prepend start token
+            decoder_input = torch.cat([
+                self.start_token.expand(batch_size, -1, -1),
+                memory[:, -self.config.pred_len:, :]
+            ], dim=1)
+        else:
+            # During inference, generate autoregressively
+            decoder_input = self.start_token.expand(batch_size, -1, -1)
+
+        # Add time embeddings for future
+        future_time_emb = self.time_embed(
+            timestamps[:, self.config.seq_len:]
+        )
+
+        # Generate future predictions
+        if self.training:
+            # Parallel decoding during training
+            decoder_input = decoder_input + future_time_emb
+            decoder_input = decoder_input + self.pos_encoding[
+                :, self.config.seq_len:self.config.seq_len + self.config.pred_len
+            ]
+
+            # Create causal mask
+            tgt_mask = nn.Transformer.generate_square_subsequent_mask(
+                self.config.pred_len
+            ).to(x.device)
+
+            # Decode
+            output = self.decoder(
+                decoder_input,
+                memory,
+                tgt_mask=tgt_mask
+            )
+        else:
+            # Autoregressive decoding during inference
+            outputs = []
+            for i in range(self.config.pred_len):
+                # Add time embedding for current step
+                pos_emb = self.pos_encoding[
+                    :, self.config.seq_len + i:self.config.seq_len + i + 1
+                ]
+                time_emb = future_time_emb[:, i:i+1]
+
+                decoder_input_step = decoder_input + pos_emb + time_emb
+
+                # Decode one step
+                output = self.decoder(decoder_input_step, memory)
+                outputs.append(output[:, -1:])
+
+                # Append to decoder input for next step
+                if i < self.config.pred_len - 1:
+                    decoder_input = torch.cat([
+                        decoder_input,
+                        output[:, -1:]
+                    ], dim=1)
+
+            output = torch.cat(outputs, dim=1)
+
+        # Project to output dimension
+        predictions = self.output_projection(output)
+
+        return predictions
+\end{lstlisting}
+
+\subsubsection{Temporal Fusion Transformer}
+
+Advanced architecture for interpretable time series forecasting:
+
+\begin{lstlisting}[language=Python, caption=Temporal Fusion Transformer Components]
+class GatedResidualNetwork(nn.Module):
+    """Gated Residual Network for feature processing"""
+
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_dim: int,
+        output_dim: int,
+        dropout: float = 0.1
+    ) -> None:
+        super().__init__()
+
+        self.input_dim = input_dim
+        self.output_dim = output_dim
+
+        # Layers
+        self.fc1 = nn.Linear(input_dim, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, output_dim)
+
+        # Gating mechanism
+        self.gate_fc1 = nn.Linear(input_dim, hidden_dim)
+        self.gate_fc2 = nn.Linear(hidden_dim, output_dim)
+
+        # Skip connection
+        if input_dim != output_dim:
+            self.skip = nn.Linear(input_dim, output_dim)
+        else:
+            self.skip = nn.Identity()
+
+        self.elu = nn.ELU()
+        self.dropout = nn.Dropout(dropout)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x: Tensor) -> Tensor:
+        # Main path
+        hidden = self.elu(self.fc1(x))
+        hidden = self.dropout(hidden)
+        hidden = self.fc2(hidden)
+
+        # Gating path
+        gate = self.elu(self.gate_fc1(x))
+        gate = self.dropout(gate)
+        gate = self.sigmoid(self.gate_fc2(gate))
+
+        # Apply gating and skip connection
+        return gate * hidden + (1 - gate) * self.skip(x)
+
+class VariableSelectionNetwork(nn.Module):
+    """Select relevant variables/features"""
+
+    def __init__(
+        self,
+        input_dim: int,
+        num_vars: int,
+        hidden_dim: int,
+        dropout: float = 0.1
+    ) -> None:
+        super().__init__()
+
+        # Individual variable transformations
+        self.var_transforms = nn.ModuleList([
+            GatedResidualNetwork(
+                input_dim, hidden_dim, hidden_dim, dropout
+            )
+            for _ in range(num_vars)
+        ])
+
+        # Variable selection weights
+        self.var_selection = GatedResidualNetwork(
+            hidden_dim * num_vars,
+            hidden_dim,
+            num_vars,
+            dropout
+        )
+
+        self.softmax = nn.Softmax(dim=-1)
+
+    def forward(self, vars_list: list[Tensor]) -> tuple[Tensor, Tensor]:
+        # Transform each variable
+        transformed = []
+        for i, var in enumerate(vars_list):
+            transformed.append(self.var_transforms[i](var))
+
+        # Concatenate transformed variables
+        concatenated = torch.cat(transformed, dim=-1)
+
+        # Compute selection weights
+        weights = self.var_selection(concatenated)
+        weights = self.softmax(weights)
+
+        # Apply weighted selection
+        selected = torch.stack(transformed, dim=-1)
+        output = torch.sum(
+            selected * weights.unsqueeze(-2),
+            dim=-1
+        )
+
+        return output, weights
+\end{lstlisting}
+
+%==============================================================================

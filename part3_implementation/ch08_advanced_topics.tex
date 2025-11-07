@@ -1,0 +1,130 @@
+% Lines 1808-1935 from original attention_transformers_notes_ghost.tex
+% Chapter 8: Advanced Topics and Extensions
+
+%==============================================================================
+\section{Advanced Topics and Extensions}
+%==============================================================================
+
+\subsection{Variants of Attention}
+
+\subsubsection{Local Attention}
+
+For very long sequences, attending to all positions becomes computationally prohibitive. Local attention restricts each position to attend only to a window of positions:
+
+\begin{equation}
+\text{LocalAttention}(i) = \text{Attention}(\mathbf{q}_i, \mathbf{K}_{[i-w:i+w]}, \mathbf{V}_{[i-w:i+w]})
+\end{equation}
+\begin{notationbox}
+\textbf{Notation:}
+\begin{itemize}
+    \item $w$: Window size
+    \item $\mathbf{K}_{[i-w:i+w]}$: Keys within the window
+    \item Reduces complexity from $O(n^2)$ to $O(n \cdot w)$
+\end{itemize}
+\end{notationbox}
+
+\subsubsection{Sparse Attention}
+
+Sparse attention patterns reduce computational complexity while maintaining model expressiveness:
+
+\begin{itemize}
+    \item \textbf{Strided Attention}: Attend to every $k$-th position
+    \item \textbf{Fixed Patterns}: Predefined sparse patterns (e.g., Longformer)
+    \item \textbf{Learned Patterns}: Learn which positions to attend to
+\end{itemize}
+
+\subsection{Vision Transformer (ViT)}
+
+The Vision Transformer adapts the transformer architecture for image classification:
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[scale=0.8, every node/.style={scale=0.8}]
+    % Original image
+    \node[draw, minimum width=3cm, minimum height=3cm, fill=gray!20] (img) at (0,0) {
+        \includegraphics[width=2.8cm]{example-image}
+    };
+    \node[below=0.1cm of img] {Input Image};
+
+    % Patches
+    \foreach \i in {0,1,2} {
+        \foreach \j in {0,1,2} {
+            \pgfmathtruncatemacro\idx{\i*3+\j+1}
+            \node[draw, minimum width=0.8cm, minimum height=0.8cm, fill=blue!20]
+                (patch\idx) at (5+\j*1,2-\i*1) {\idx};
+        }
+    }
+    \node[below=0.5cm of patch8] {Image Patches};
+
+    % Linear projection
+    \node[draw, fill=yellow!20, minimum width=4cm, minimum height=0.8cm]
+        (linear) at (9,0) {Linear Projection};
+
+    % Position embeddings
+    \node[draw, fill=orange!20, minimum width=4cm, minimum height=0.8cm]
+        (pos) at (9,-1.5) {Position Embeddings};
+
+    % Class token
+    \node[draw, fill=red!20, minimum width=1cm, minimum height=0.8cm]
+        (cls) at (7,-3) {[CLS]};
+
+    % Transformer encoder
+    \node[draw, fill=green!20, minimum width=5cm, minimum height=2cm]
+        (transformer) at (9,-4.5) {Transformer Encoder};
+
+    % MLP head
+    \node[draw, fill=purple!20, minimum width=3cm, minimum height=0.8cm]
+        (mlp) at (9,-6.5) {MLP Head};
+
+    % Output
+    \node[draw, fill=gray!20, minimum width=2cm, minimum height=0.8cm]
+        (output) at (9,-8) {Class};
+
+    % Arrows
+    \draw[arrow, thick] (img) -- (patch5);
+    \foreach \i in {1,...,9} {
+        \draw[arrow] (patch\i) -- (linear);
+    }
+    \draw[arrow] (linear) -- (pos);
+    \draw[arrow] (pos) -- (transformer);
+    \draw[arrow] (cls) -- (transformer);
+    \draw[arrow] (transformer) -- (mlp);
+    \draw[arrow] (mlp) -- (output);
+
+    % Annotations
+    \draw[decorate, decoration={brace,amplitude=5pt}]
+        (patch1.north west) -- (patch3.north east)
+        node[midway,above=5pt] {$P \times P$};
+\end{tikzpicture}
+\caption{Vision Transformer Architecture}
+\label{fig:vit}
+\end{figure}
+
+Key differences from NLP transformers:
+\begin{enumerate}
+    \item \textbf{Input Representation}: Images are divided into fixed-size patches
+    \item \textbf{Linear Projection}: Each patch is flattened and linearly projected
+    \item \textbf{Classification Token}: A learnable [CLS] token is prepended
+    \item \textbf{Position Embeddings}: Learnable 2D position embeddings
+    \item \textbf{Output}: Only the [CLS] token representation is used for classification
+\end{enumerate}
+
+\subsection{Efficient Transformers}
+
+Recent research has focused on reducing the quadratic complexity of attention:
+
+\begin{table}[H]
+\centering
+\caption{Efficient Transformer Variants}
+\begin{tabular}{l c l}
+\toprule
+\textbf{Model} & \textbf{Complexity} & \textbf{Method} \\
+\midrule
+Linformer & $O(n)$ & Low-rank approximation of attention \\
+Performer & $O(n)$ & Kernel-based approximation \\
+Reformer & $O(n \log n)$ & Locality-sensitive hashing \\
+Longformer & $O(n)$ & Sliding window + global attention \\
+BigBird & $O(n)$ & Sparse patterns + random attention \\
+\bottomrule
+\end{tabular}
+\end{table}

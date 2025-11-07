@@ -1,0 +1,178 @@
+% Lines 271-446 from original attention_transformers_notes_ghost.tex
+% Chapter 3: The Birth of Attention - RNN with Attention Mechanism
+
+%==============================================================================
+\section{The Birth of Attention: RNN with Attention Mechanism}
+%==============================================================================
+
+\subsection{Encoder-Decoder Architecture}
+
+Before diving into attention, let's establish the encoder-decoder framework that became standard for sequence-to-sequence tasks:
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[scale=0.9, every node/.style={scale=0.9}]
+    % Encoder
+    \node[encoder] (enc1) at (0,0) {RNN\\Encoder};
+    \node[encoder] (enc2) at (3,0) {RNN\\Encoder};
+    \node[encoder] (enc3) at (6,0) {RNN\\Encoder};
+
+    % Hidden states
+    \node[circle, draw, fill=attentionred] (h1) at (0,2) {$\mathbf{h}_1$};
+    \node[circle, draw, fill=attentionred] (h2) at (3,2) {$\mathbf{h}_2$};
+    \node[circle, draw, fill=attentionred] (h3) at (6,2) {$\mathbf{h}_3$};
+
+    % Inputs
+    \node[embedding] (x1) at (0,-2) {I};
+    \node[embedding] (x2) at (3,-2) {am};
+    \node[embedding] (x3) at (6,-2) {Vasilis};
+
+    % Embeddings
+    \node[embedding, fill=gray!40] (e1) at (0,-1) {$[0.1, 0.3, -0.8]$};
+    \node[embedding, fill=gray!40] (e2) at (3,-1) {$[0.4, 0.2, 0.1]$};
+    \node[embedding, fill=gray!40] (e3) at (6,-1) {$[0.3, 0.1, -0.9]$};
+
+    % Context vector
+    \node[circle, draw, fill=nodepurple, minimum size=1.2cm] (context) at (9,2) {$\mathbf{c}$};
+
+    % Decoder
+    \node[decoder] (dec1) at (12,0) {RNN\\Decoder};
+    \node[decoder] (dec2) at (15,0) {RNN\\Decoder};
+    \node[decoder] (dec3) at (18,0) {RNN\\Decoder};
+
+    % Outputs
+    \node[embedding] (y1) at (12,-2) {Ich};
+    \node[embedding] (y2) at (15,-2) {bin};
+    \node[embedding] (y3) at (18,-2) {Vasilis};
+
+    % Arrows
+    \draw[arrow] (x1) -- (e1);
+    \draw[arrow] (x2) -- (e2);
+    \draw[arrow] (x3) -- (e3);
+    \draw[arrow] (e1) -- (enc1);
+    \draw[arrow] (e2) -- (enc2);
+    \draw[arrow] (e3) -- (enc3);
+    \draw[arrow] (enc1) -- (h1);
+    \draw[arrow] (enc2) -- (h2);
+    \draw[arrow] (enc3) -- (h3);
+    \draw[arrow] (h1) -- (enc2);
+    \draw[arrow] (h2) -- (enc3);
+    \draw[arrow, very thick, red] (h3) -- (context) node[midway, above] {Final state};
+    \draw[arrow, very thick, purple] (context) -- (dec1);
+    \draw[arrow] (dec1) -- (y1);
+    \draw[arrow] (dec2) -- (y2);
+    \draw[arrow] (dec3) -- (y3);
+    \draw[arrow] (dec1) -- (dec2);
+    \draw[arrow] (dec2) -- (dec3);
+
+    % Labels
+    \node[above=0.5cm of h2, font=\large\bfseries] {Encoding Phase};
+    \node[below=0.5cm of dec2, font=\large\bfseries] {Decoding Phase};
+\end{tikzpicture}
+\caption{Traditional Encoder-Decoder Architecture without Attention}
+\label{fig:enc-dec-no-attention}
+\end{figure}
+
+The fundamental limitation of this architecture is the \textbf{information bottleneck}: the entire source sequence must be compressed into a single fixed-size context vector $\mathbf{c}$.
+
+\subsection{Introducing Attention: The Key Innovation}
+
+The attention mechanism addresses this bottleneck by allowing the decoder to access \textit{all} encoder hidden states, not just the final one. At each decoding step, the model computes a weighted average of encoder hidden states based on their relevance to the current decoding state.
+
+\subsubsection{Mathematical Formulation}
+
+Given encoder hidden states $\{\mathbf{h}_1, \mathbf{h}_2, ..., \mathbf{h}_n\}$ and decoder state $\mathbf{s}_t$ at time $t$:
+
+\begin{enumerate}
+    \item \textbf{Score Calculation}: Compute relevance scores between decoder state and each encoder state
+    \begin{equation}
+    e_{tj} = \text{score}(\mathbf{s}_{t-1}, \mathbf{h}_j)
+    \end{equation}
+    \begin{notationbox}
+    \textbf{Notation:}
+    \begin{itemize}
+        \item $e_{tj}$: Attention score for encoder position $j$ at decoder time $t$
+        \item $\mathbf{s}_{t-1}$: Previous decoder hidden state
+        \item $\mathbf{h}_j$: Encoder hidden state at position $j$
+        \item $\text{score}$: Scoring function (various options exist)
+    \end{itemize}
+    \end{notationbox}
+
+    \item \textbf{Attention Weight Computation}: Convert scores to probabilities using softmax
+    \begin{equation}
+    \alpha_{tj} = \frac{\exp(e_{tj})}{\sum_{k=1}^{n} \exp(e_{tk})}
+    \end{equation}
+    \begin{notationbox}
+    \textbf{Notation:}
+    \begin{itemize}
+        \item $\alpha_{tj}$: Attention weight for encoder position $j$ at decoder time $t$
+        \item $\sum_{j} \alpha_{tj} = 1$: Weights form a probability distribution
+    \end{itemize}
+    \end{notationbox}
+
+    \item \textbf{Context Vector Creation}: Weighted sum of encoder hidden states
+    \begin{equation}
+    \mathbf{c}_t = \sum_{j=1}^{n} \alpha_{tj} \mathbf{h}_j
+    \end{equation}
+    \begin{notationbox}
+    \textbf{Notation:}
+    \begin{itemize}
+        \item $\mathbf{c}_t$: Context vector at decoder time $t$
+        \item This is a \textit{dynamic} context vector, different for each decoding step
+    \end{itemize}
+    \end{notationbox}
+\end{enumerate}
+
+\subsubsection{Scoring Functions}
+
+Several scoring functions have been proposed in the literature:
+
+\begin{table}[H]
+\centering
+\caption{Common Attention Scoring Functions}
+\begin{tabular}{l l l}
+\toprule
+\textbf{Name} & \textbf{Function} & \textbf{Parameters} \\
+\midrule
+Dot Product & $\mathbf{s}_{t-1}^T \mathbf{h}_j$ & None \\
+Scaled Dot Product & $\frac{\mathbf{s}_{t-1}^T \mathbf{h}_j}{\sqrt{d_k}}$ & None \\
+General (Multiplicative) & $\mathbf{s}_{t-1}^T \mathbf{W}_a \mathbf{h}_j$ & $\mathbf{W}_a$ \\
+Concatenation (Additive) & $\mathbf{v}_a^T \tanh(\mathbf{W}_a[\mathbf{s}_{t-1}; \mathbf{h}_j])$ & $\mathbf{W}_a, \mathbf{v}_a$ \\
+Location-based & $\mathbf{W}_a \mathbf{s}_{t-1}$ & $\mathbf{W}_a$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The scaled dot product became the standard in transformers due to its computational efficiency and effectiveness. Note: the location-based variant depends only on decoder position (no $\mathbf{h}_j$), and is rarely used alone in modern architectures.
+
+\subsection{Attention Visualization}
+
+Let's visualize how attention weights change during decoding:
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[scale=0.8]
+    % Encoder states
+    \foreach \i/\word in {1/I,2/am,3/Vasilis} {
+        \node[encoder, minimum height=1cm] (enc\i) at (\i*3,0) {\word};
+        \node[circle, draw, fill=attentionred] (h\i) at (\i*3,1.5) {$\mathbf{h}_{\i}$};
+        \draw[arrow] (enc\i) -- (h\i);
+    }
+
+    % Decoder states
+    \foreach \i/\word in {1/Ich,2/bin,3/Vasilis} {
+        \node[decoder, minimum height=1cm] (dec\i) at (\i*3,-4) {\word};
+    }
+
+    % Attention weights for first decoder step
+    \draw[arrow, line width=6pt, red!70, opacity=0.7] (h1) -- (dec1) node[midway, right] {0.96};
+    \draw[arrow, line width=1pt, red!30, opacity=0.7] (h2) -- (dec1) node[midway, left] {0.01};
+    \draw[arrow, line width=1pt, red!30, opacity=0.7] (h3) -- (dec1) node[midway, left] {0.01};
+
+    % Title
+    \node[above=2cm of h2, font=\large\bfseries] {Attention Weights at Decoder Step 1};
+    \node[below=0.3cm of dec2] {Strong attention on "I" when generating "Ich"};
+\end{tikzpicture}
+\caption{Attention Weight Visualization}
+\label{fig:attention-weights}
+\end{figure}
